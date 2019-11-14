@@ -138,11 +138,12 @@ contains
     real(r8) :: wue                  ! Water-use efficiency check
     real(r8) :: minpsi               ! Cavitation check
     real(r8) :: val                  ! Returned minimum of the two checks
+    real(r8) :: minlwp,iota
     !---------------------------------------------------------------------
 
     associate ( &
-    minlwp    => pftcon%minlwp       , &  ! Minimum leaf water potential (MPa)
-    iota      => pftcon%iota         , &  ! Stomatal water-use efficiency (umol CO2/ mol H2O)
+    !minlwp    => pftcon%minlwp       , &  ! Minimum leaf water potential (MPa)
+    !iota      => pftcon%iota         , &  ! Stomatal water-use efficiency (umol CO2/ mol H2O)
     psil      => mlcanopy_inst%psil  , &  ! Leaf water potential (MPa)
     an        => mlcanopy_inst%an    , &  ! Leaf net photosynthesis (umol CO2/m2 leaf/s)
     vpd       => mlcanopy_inst%vpd   , &  ! Leaf vapor pressure deficit (Pa)
@@ -150,7 +151,8 @@ contains
     )
 
     ! Specify "delta" as a small difference in gs (mol H2O/m2/s)
-
+    minlwp = -2._r8
+    iota = 750._r8 ! 7.5 (deciduous broadleaf forest) 15 (evergreen needleleaf forest)
     delta = 0.001_r8
 
     ! Photosynthesis at lower gs (gs_val - delta)
@@ -169,11 +171,11 @@ contains
 
     ! Efficiency check: wue < 0 when d(An) / d(gs) < iota * vpd
 
-    wue = (an1 - an2) - iota(patch%itype(p)) * delta * (vpd(p,ic,il) / pref(p))
+    wue = (an1 - an2) - iota * delta * (vpd(p,ic,il) / pref(p))
 
     ! Cavitation check: minpsi < 0 when leafwp < minlwp
 
-    minpsi = leafwp - minlwp(patch%itype(p))
+    minpsi = leafwp - minlwp
 
     ! Return the minimum of the two checks
 
@@ -262,20 +264,21 @@ contains
     real(r8) :: y0                            ! Leaf water potential at beginning of timestep (MPa)
     real(r8) :: dy                            ! Change in leaf water potential (MPa)
     real(r8) :: a, b                          ! Intermediate calculation
-    real(r8) :: head = denh2o*grav*1.e-06_r8  ! Head of pressure  (MPa/m)
+    real(r8) :: head  ! Head of pressure  (MPa/m)
+    real(r8) :: capac
     !---------------------------------------------------------------------
 
     associate ( &
-    capac       => pftcon%capac          , &  ! Plant capacitance (mmol H2O/m2 leaf area/MPa)
+    !capac       => pftcon%capac          , &  ! Plant capacitance (mmol H2O/m2 leaf area/MPa)
     dpai        => mlcanopy_inst%dpai    , &  ! Layer plant area index (m2/m2)
     zs          => mlcanopy_inst%zs      , &  ! Canopy height for scalar concentration and source (m)
     psis        => mlcanopy_inst%psis    , &  ! Weighted soil water potential (MPa)
     lsc         => mlcanopy_inst%lsc     , &  ! Leaf-specific conductance for canopy layer (mmol H2O/m2 leaf/s/MPa)
     trleaf      => mlcanopy_inst%trleaf    &  ! Leaf transpiration flux (mol H2O/m2 leaf/s)
     )
-
+    capac = 2500._r8
     ! Get step size
-
+    head =  denh2o*grav*1.e-06_r8
     dtime = dtime_sub
 
     ! Change in leaf water potential is: dy / dt = (a - y) / b. The integrated change 
@@ -284,7 +287,7 @@ contains
     if (dpai(p,ic) > 0._r8) then ! leaf layer
        y0 = leafwp
        a = psis(p) - head *  zs(p,ic) - 1000._r8 * trleaf(p,ic,il) / lsc(p,ic)
-       b = capac(patch%itype(p)) / lsc(p,ic)
+       b = capac / lsc(p,ic)
        dy = (a - y0) * (1._r8 - exp(-dtime/b))
        leafwp = y0 + dy
     else ! non-leaf layer

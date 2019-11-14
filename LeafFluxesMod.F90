@@ -41,7 +41,7 @@ contains
     !
     ! !LOCAL VARIABLES:
     real(r8) :: t0, t1                  ! Initial estimates for leaf temperature (K)
-    real(r8), parameter :: tol=0.1_r8   ! Accuracy tolerance for tleaf (K)
+    real(r8), parameter :: tol=0.01_r8   ! Accuracy tolerance for tleaf (K)
     real(r8) :: dummy                   ! Dummy argument, not needed
     !---------------------------------------------------------------------
 
@@ -64,8 +64,8 @@ contains
 
           ! Initial estimates for leaf temperature
 
-          t0 = tleaf(p,ic,il) - 1._r8
-          t1 = tleaf(p,ic,il) + 1._r8
+          t0 = tleaf(p,ic,il) - 1.0_r8
+          t1 = tleaf(p,ic,il) + 1.0_r8
 
           ! Solve for tleaf: Use TleafFunc to iterate leaf temperature, energy fluxes,
           ! photosynthesis and stomatal conductance. This temperature is refined to an
@@ -127,6 +127,18 @@ contains
     associate (tleaf => mlcanopy_inst%tleaf)  ! Leaf temperature (K)
 
     if (tleaf_val < 0._r8) then
+        write(iulog,*) 'tleaf_val=', tleaf_val
+        write(iulog,*) 'ga_prof=',mlcanopy_inst%ga_prof
+        write(iulog,*) 'wind_1st=', mlcanopy_inst%wind_1st
+        write(iulog,*) 'wind_1st=', mlcanopy_inst%wind_1st
+        write(iulog,*) 'tleaf1=', tleaf(:,:,il)
+        write(iulog,*) 'tleaf_old=', mlcanopy_inst%tleaf_old(:,:,il)
+        write(iulog,*) 'rnetleaf=', mlcanopy_inst%rnleaf(:,:,il)
+        write(iulog,*) 'gbh=', mlcanopy_inst%gbh(:,:,il)
+        write(iulog,*) 'gbv=', mlcanopy_inst%gbv(:,:,il)
+        write(iulog,*) 'gbc=', mlcanopy_inst%gbc(:,:,il)
+        write(iulog,*) 'gs=', mlcanopy_inst%gs(:,:,il)
+        write(iulog,*) 'ic=', ic,'il=', il
        call endrun (msg=' ERROR: LeafFluxesMod: TleafFunc error')
     end if
 

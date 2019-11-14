@@ -209,14 +209,16 @@ contains
     real(r8) :: aquad,bquad,cquad   ! Terms for quadratic equations
     real(r8) :: r1,r2               ! Roots of quadratic equation
     real(r8) :: ci0, ci1            ! Initial estimates for Ci
-    real(r8), parameter :: tol = 0.1_r8 ! Convergence tolerance for Ci (mol/mol)
+    real(r8), parameter :: tol = 0.01_r8 ! Convergence tolerance for Ci (mol/mol)
+    real(r8) :: g0opt
+    real(r8) :: g1opt
     !---------------------------------------------------------------------
 
     associate ( &
                                              ! *** Input ***
     c3psn     => pftcon%c3psn           , &  ! Photosynthetic pathway: 1. = c3 plant and 0. = c4 plant
-    g0opt     => pftcon%g0opt           , &  ! Ball-Berry minimum leaf conductance, unstressed (mol H2O/m2/s)
-    g1opt     => pftcon%g1opt           , &  ! Ball-Berry slope of conductance-photosynthesis relationship, unstressed
+    !g0opt     => pftcon%g0opt           , &  ! Ball-Berry minimum leaf conductance, unstressed (mol H2O/m2/s)
+    !g1opt     => pftcon%g1opt           , &  ! Ball-Berry slope of conductance-photosynthesis relationship, unstressed
     dpai      => mlcanopy_inst%dpai     , &  ! Layer plant area index (m2/m2)
     btran     => mlcanopy_inst%btran    , &  ! Ball-Berry soil wetness factor (-)
     vcmax25   => mlcanopy_inst%vcmax25  , &  ! Leaf maximum carboxylation rate at 25C for canopy layer (umol/m2/s)
@@ -243,6 +245,16 @@ contains
     cs        => mlcanopy_inst%cs       , &  ! Leaf surface CO2 (umol/mol)
     gs        => mlcanopy_inst%gs         &  ! Leaf stomatal conductance (mol H2O/m2 leaf/s)
     )
+    ! jsong
+      if (nint(c3psn(patch%itype(p))) == 1) then
+
+         g1opt = 9._r8
+         g0opt = 0.01_r8
+      else
+
+         g1opt = 5.124_r8
+         g0opt = 0.0407724_r8
+      end if
 
     if (dpai(p,ic) > 0._r8) then ! leaf layer
 
@@ -275,15 +287,15 @@ contains
 
        if (gstyp == 0) then
           vcmax = vcmax * btran(p)
-          g0 = g0opt(patch%itype(p))
+          g0 = g0opt
        end if
 
        if (gstyp == 1) then
           vcmax = vcmax * btran(p)
-          g0 = max( g0opt(patch%itype(p)) * btran(p), 1.e-06_r8 )
+          g0 = max( g0opt * btran(p), 1.e-06_r8 )
        end if
 
-       g1 = g1opt(patch%itype(p))
+       g1 = g1opt
 
        ! Save leaf respiration
 

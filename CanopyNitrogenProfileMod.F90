@@ -25,7 +25,9 @@ module CanopyNitrogenProfileMod
     !
     ! !USES:
     use clm_varctl, only : use_clm45kn
+    use abortutils, only : endrun
     use clm_varctl, only : use_acclim
+    use clm_varctl, only : lnc_opt, reduce_dayl_factor, vcmax_opt
     use clm_varcon, only : tfrz
     use pftconMod, only : pftcon
     use PatchType, only : patch
@@ -47,11 +49,19 @@ module CanopyNitrogenProfileMod
     real(r8) :: kp25top         ! Canopy top - C4: Initial slope of CO2 response curve at 25C (mol/m2/s)
     real(r8) :: kn              ! Leaf nitrogen decay coefficient
     real(r8) :: nscale          ! Nitrogen scaling coefficient
+    real(r8) :: fnr               ! (gRubisco/gN in Rubisco)
+    real(r8) :: act25             ! (umol/mgRubisco/min) Rubisco activity at 25 C
+    real(r8) :: lnc           ! leaf nitrogen scaling coefficient
     !---------------------------------------------------------------------
 
     associate ( &
                                                     ! *** Input ***
-    vcmaxpft    => pftcon%vcmaxpft             , &  ! Maximum carboxylation rate at 25C (umol/m2/s)
+    !vcmaxpft    => pftcon%vcmaxpft             , &  ! Maximum carboxylation rate at 25C (umol/m2/s)
+         leafcn     => pftcon%leafcn                         , & ! Input:  leaf C:N (gC/gN)
+         flnr       => pftcon%flnr                           , & ! Input:  fraction of leaf N in the Rubisco enzyme (gN Rubisco / gN leaf)
+         fnitr      => pftcon%fnitr                          , & ! Input:  foliage nitrogen limitation factor (-)
+        slatop     => pftcon%slatop                         , & ! Input:  specific leaf area at top of canopy, projected area basis [m^2/gC]
+
     c3psn       => pftcon%c3psn                , &  ! Photosynthetic pathway: 1. = c3 plant and 0. = c4 plant
     tacclim     => mlcanopy_inst%tacclim       , &  ! Average air temperature for acclimation (K)
     ncan        => mlcanopy_inst%ncan          , &  ! Number of aboveground layers
@@ -63,14 +73,31 @@ module CanopyNitrogenProfileMod
     rd25        => mlcanopy_inst%rd25          , &  ! Leaf respiration rate at 25C for canopy layer (umol CO2/m2/s)
     kp25        => mlcanopy_inst%kp25            &  ! C4 - initial slope of CO2 response curve at 25C for canopy layer (mol/m2/s)
     )
+      ! jsong
+      ! vcmax25 parameters, from CN
+
+      fnr = 7.16_r8
+      act25 = 3.6_r8   !umol/mgRubisco/min
+      ! Convert rubisco activity units from umol/mgRubisco/min -> umol/gRubisco/s
+      act25 = act25 * 1000.0_r8 / 60.0_r8
 
     do f = 1, num_exposedvegp
        p = filter_exposedvegp(f)
 
+         if (lnc_opt .eqv. .false.) then
+            ! Leaf nitrogen concentration at the top of the canopy (g N leaf / m**2 leaf)
+
+           if ( (slatop(patch%itype(p)) *leafcn(patch%itype(p))) .le. 0.0_r8)then
+              call endrun(msg = 'ERROR: slatop or leafcn is zero' )
+           end if
+           lnc = 1._r8 / (slatop(patch%itype(p)) * leafcn(patch%itype(p)))
+         end if
+
        ! vcmax and other parameters (at 25C and top of canopy). jmax acclimation
        ! from Kattge and Knorr (2007) Plant, Cell Environment 30:1176-1190
 
-       vcmax25top = vcmaxpft(patch%itype(p))
+       !vcmax25top = vcmaxpft(patch%itype(p))
+       vcmax25top = lnc * flnr(patch%itype(p)) * fnr * act25 !* dayl_factor(p)
 
        if (nint(c3psn(patch%itype(p))) == 1) then
           if (use_acclim) then

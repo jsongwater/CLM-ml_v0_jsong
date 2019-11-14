@@ -128,9 +128,9 @@ contains
 
        err = rnleaf(p,ic,il) - shleaf(p,ic,il) - lhleaf(p,ic,il) - stleaf(p,ic,il)
        if (abs(err) > 1.e-03_r8) then
-!         write (iulog,*) 'LeafTemperatureMod error:'
-!         write (iulog,*) rnleaf(p,ic,il), shleaf(p,ic,il), lhleaf(p,ic,il), stleaf(p,ic,il), err
-!         write (iulog,*) tleaf(p,ic,il), tleaf_old(p,ic,il)
+         write (iulog,*) 'LeafTemperatureMod error:'
+         write (iulog,*) rnleaf(p,ic,il), shleaf(p,ic,il), lhleaf(p,ic,il), stleaf(p,ic,il), err
+         write (iulog,*) tleaf(p,ic,il), tleaf_old(p,ic,il)
           call endrun (msg=' ERROR: LeafTemperatureMod: energy balance error')
        end if
 

@@ -25,9 +25,12 @@ module MathToolsMod
     function xfunc (p, iv, il, mlcanopy_inst, x) result(f)
     use shr_kind_mod, only : r8 => shr_kind_r8
     use CanopyFluxesMultilayerType, only : mlcanopy_type
-    integer :: p, iv, il
-    real(r8) :: x, f
-    type(mlcanopy_type) :: mlcanopy_inst
+    integer, intent(in) :: p          ! pft index for CLM g/l/c/p hierarchy
+    integer, intent(in) :: iv         ! Leaf layer index
+    integer, intent(in) :: il         ! Sunlit (1) or shaded (2) leaf index
+    real(r8), intent(in) :: x
+    real(r8) :: f
+    type(mlcanopy_type), intent(inout) :: mlcanopy_inst
     end function xfunc
   end interface
 
@@ -94,7 +97,17 @@ contains
     do
        iter = iter + 1
        dx = -f1 * (x1 - x0) / (f1 - f0)
+
+       if ((abs(1 - f0/f1) < 1.e-10) .or. (abs(1 - x0/x1) < 1.e-10)) then ! jytamu
+          if (abs(xb-xa)<abs(dx)) then
+            write(iulog,*) 'xa xb f1 f0 x1 x0 dx = ', xa, xb, f1, f0, x1, x0, dx
+            x0 = x1
+            exit
+          end if
+       end if
+
        x = x1 + dx
+
        if (abs(dx) < tol) then
           x0 = x
           exit

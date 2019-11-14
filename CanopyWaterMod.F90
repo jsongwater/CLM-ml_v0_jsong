@@ -8,6 +8,7 @@ module CanopyWaterMod
   use shr_kind_mod, only : r8 => shr_kind_r8
   use abortutils, only : endrun
   use CanopyFluxesMultilayerType, only : mlcanopy_type
+  use clm_varctl, only : iulog
   !
   ! !PUBLIC TYPES:
   implicit none
@@ -55,8 +56,7 @@ contains
     real(r8) :: qflx_prec_grnd_snow              ! Total snow throughfall onto ground (kg H2O/m2/s)
     !---------------------------------------------------------------------
 
-    associate ( &
-                                                         ! *** Input ***
+    associate ( &                                                         ! *** Input ***
     lai            => mlcanopy_inst%lai             , &  ! Leaf area index of canopy (m2/m2)
     sai            => mlcanopy_inst%sai             , &  ! Stem area index of canopy (m2/m2)
     ncan           => mlcanopy_inst%ncan            , &  ! Number of aboveground layers
@@ -95,9 +95,9 @@ contains
 
        ! Fraction of precipitation that is intercepted
 
-!      fpi = 0.25_r8 * (1._r8 - exp(-0.5_r8*(lai(p) + sai(p))))   ! CLM4.5
-       interception_fraction = 1._r8
-       fpi = interception_fraction * tanh(lai(p) + sai(p))        ! CLM5
+      fpi = 0.25_r8 * (1._r8 - exp(-0.5_r8*(lai(p) + sai(p))))   ! CLM4.5
+       !interception_fraction = 1._r8
+       !fpi = interception_fraction * tanh(lai(p) + sai(p))        ! CLM5
 
        ! Direct throughfall
 
@@ -170,6 +170,8 @@ contains
        qflx_prec_grnd_rain = qflx_through_rain + qflx_candrip * fracrain
        qflx_prec_grnd_snow = qflx_through_snow + qflx_candrip * fracsnow
 
+       !write (iulog,*) 'qflx_prec_grnd_rain=', qflx_prec_grnd_rain,'qflx_prec_grnd_snow=', qflx_prec_grnd_snow
+
     end do
 
     end associate
@@ -202,7 +204,6 @@ contains
     dpai           => mlcanopy_inst%dpai       , &  ! Layer plant area index (m2/m2)
     trleaf         => mlcanopy_inst%trleaf     , &  ! Leaf transpiration flux (mol H2O/m2 leaf/s)
     evleaf         => mlcanopy_inst%evleaf     , &  ! Leaf evaporation flux (mol H2O/m2 leaf/s)
-    dpai           => mlcanopy_inst%dpai       , &  ! Layer plant area index (m2/m2)
     fracsun        => mlcanopy_inst%fracsun    , &  ! Sunlit fraction of canopy layer
     fracsha        => mlcanopy_inst%fracsha    , &  ! Shaded fraction of canopy layer
                                                     ! *** Input/Output ***

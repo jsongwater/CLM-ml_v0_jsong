@@ -25,7 +25,7 @@ contains
     ! Longwave radiation transfer through canopy using Norman (1979)
     !
     ! !USES:
-    use clm_varpar, only : isun, isha, nlevcan
+    use clm_varpar, only : isun, isha, nlevcanml
     use clm_varcon, only : sb
     use clm_varctl, only : iulog
     use decompMod, only : bounds_type
@@ -56,22 +56,23 @@ contains
     real(r8) :: refld                         ! Term for longwave radiation reflected by layer
     real(r8) :: ir_source_sun                 ! Longwave radiation emitted by sunlit leaf (W/m2)
     real(r8) :: ir_source_sha                 ! Longwave radiation emitted by shaded leaf (W/m2)
-    real(r8) :: ir_source(nlevcan)            ! Longwave radiation emitted by leaf layer (W/m2)
+    real(r8) :: ir_source(nlevcanml)            ! Longwave radiation emitted by leaf layer (W/m2)
     integer  :: m                             ! Index to the tridiagonal matrix
     real(r8) :: aic, bic                      ! Intermediate terms for tridiagonal matrix
     real(r8) :: eic, fic                      ! Intermediate terms for tridiagonal matrix
-    integer, parameter :: neq = (nlevcan+1)*2 ! Number of tridiagonal equations to solve
+    integer, parameter :: neq = (nlevcanml+1)*2 ! Number of tridiagonal equations to solve
     real(r8) :: atri(neq), btri(neq)          ! Entries in tridiagonal matrix
     real(r8) :: ctri(neq), dtri(neq)          ! Entries in tridiagonal matrix
     real(r8) :: utri(neq)                     ! Tridiagonal solution
     real(r8) :: irabs                         ! Absorbed longwave flux (W/m2 ground)
-    real(r8) :: irup(bounds%begp:bounds%endp,0:nlevcan) ! Upward longwave flux above canopy layer (W/m2 ground)
-    real(r8) :: irdn(bounds%begp:bounds%endp,0:nlevcan) ! Downward longwave flux onto canopy layer (W/m2 ground)
+    real(r8) :: irup(bounds%begp:bounds%endp,0:nlevcanml) ! Upward longwave flux above canopy layer (W/m2 ground)
+    real(r8) :: irdn(bounds%begp:bounds%endp,0:nlevcanml) ! Downward longwave flux onto canopy layer (W/m2 ground)
+    real(r8) :: emleaf
     !---------------------------------------------------------------------
 
     associate ( &
                                                  ! *** Input ***
-    emleaf   => pftcon%emleaf               , &  ! Leaf emissivity (-)
+    !emleaf   => pftcon%emleaf               , &  ! Leaf emissivity (-)
     tg       => mlcanopy_inst%tg            , &  ! Soil surface temperature (K)
     ncan     => mlcanopy_inst%ncan          , &  ! Number of aboveground layers
     nbot     => mlcanopy_inst%nbot          , &  ! Index for bottom leaf layer
@@ -89,6 +90,7 @@ contains
     irsoi    => mlcanopy_inst%irsoi           &  ! Absorbed longwave radiation, ground (W/m2)
     )
 
+    emleaf = 0.95_r8
     do f = 1, num_exposedvegp
        p = filter_exposedvegp(f)
 
@@ -112,7 +114,7 @@ contains
        ! and transmitted by a layer
        !------------------------------------------------------------------
 
-       omega = 1._r8 - emleaf(patch%itype(p))
+       omega = 1._r8 - emleaf
 
        ! Intercepted radiation is reflected
 
@@ -129,8 +131,8 @@ contains
        !------------------------------------------------------------------
 
        do ic = nbot(p), ntop(p)
-          ir_source_sun = emleaf(patch%itype(p)) * sb * tleaf(p,ic,isun)**4
-          ir_source_sha = emleaf(patch%itype(p)) * sb * tleaf(p,ic,isha)**4
+          ir_source_sun = emleaf * sb * tleaf(p,ic,isun)**4
+          ir_source_sha = emleaf * sb * tleaf(p,ic,isha)**4
           ir_source(ic) = (ir_source_sun * fracsun(p,ic) + ir_source_sha * fracsha(p,ic)) * (1._r8 - td(p,ic))
        end do
 
@@ -269,7 +271,7 @@ contains
           else
              icm1 = ic - 1
           end if
-          irabs = emleaf(patch%itype(p)) * (irdn(p,ic)+irup(p,icm1)) * (1._r8 - td(p,ic)) - 2._r8 * ir_source(ic)
+          irabs = emleaf * (irdn(p,ic)+irup(p,icm1)) * (1._r8 - td(p,ic)) - 2._r8 * ir_source(ic)
           irleaf(p,ic) = irabs / dpai(p,ic)
 
           ! Sum longwave radiation absorbed by vegetation
@@ -291,7 +293,23 @@ contains
        sumabs = irsky(p) - ircan(p)
        error = sumabs - (irveg(p) + irsoi(p))
        if (abs(error) > 1.e-03) then
+
+          write(iulog,*) 'irsky=', irsky(p)
+          write(iulog,*) 'ircan=', ircan(p)
+          write(iulog,*) 'irveg=', irveg(p)
+          write(iulog,*) 'irsoi=', irsoi(p)
+          write(iulog,*) 'irleaf=',irleaf
+          write(iulog,*) 'fracsun=', fracsun
+          write(iulog,*) 'fracsha=', fracsha
+          write(iulog,*) 'td=', td
+
+          write(iulog,*) 'tg=', tg(p)
+          write(iulog,*) 'tleaf=', tleaf(p,ntop(p),1),'tleaf=', tleaf(p,1,1)
+          write(iulog,*) '(irsky(p) - ircan(p))-(irveg(p) + irsoi(p))',error
+
           call endrun (msg='ERROR: LongwaveRadiationMod: total longwave conservation error')
+       else
+
        end if
 
     end do

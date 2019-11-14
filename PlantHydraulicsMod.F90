@@ -42,7 +42,7 @@ contains
 
     associate ( &
                                            ! *** Input ***
-    gplant    => pftcon%gplant       , &   ! Stem (xylem-to-leaf) hydraulic conductance (mmol H2O/m2 leaf area/s/MPa)
+    !gplant    => pftcon%gplant       , &   ! Stem (xylem-to-leaf) hydraulic conductance (mmol H2O/m2 leaf area/s/MPa)
     ncan      => mlcanopy_inst%ncan  , &   ! Number of aboveground layers
     dpai      => mlcanopy_inst%dpai  , &   ! Layer plant area index (m2/m2)
     zs        => mlcanopy_inst%zs    , &   ! Canopy height for scalar concentration and source (m)
@@ -60,7 +60,7 @@ contains
              ! Aboveground plant stem resistance, xylem-to-leaf (MPa.s.m2/mmol H2O)
 
 !            rplant = zs(p,ic) / gplant(patch%itype(p))       ! gplant is conductivity (mmol/m/s/MPa)
-             rplant = 1._r8 / gplant(patch%itype(p))          ! gplant is conductance (mmol/m2/s/MPa)
+             rplant = 0._r8!1._r8 !/ gplant(patch%itype(p))          ! gplant is conductance (mmol/m2/s/MPa) jsong
 
              ! Leaf specific conductance, soil-to-leaf (mmol H2O/m2/s/MPa)
 
@@ -120,16 +120,18 @@ contains
     real(r8) :: smp_mpa(nlevsoi)                 ! Soil matric potential (MPa)
     real(r8) :: evap(nlevsoi)                    ! Maximum transpiration (mmol H2O/m2/s)
     real(r8) :: totevap                          ! Total maximum transpiration (mmol H2O/m2/s)
-
-    real(r8), parameter :: head = denh2o*grav*1.e-06_r8  ! Head of pressure  (MPa/m)
+    real(r8) :: head
+    !real(r8), parameter :: head = denh2o*grav*1.e-06_r8  ! Head of pressure  (MPa/m)
+    real(r8) :: minlwp
+    real(r8) :: root_resist
     !---------------------------------------------------------------------
 
     associate ( &
                                                         ! *** Input ***
-    minlwp       => pftcon%minlwp                  , &  ! Minimum leaf water potential (MPa)
+    !minlwp       => pftcon%minlwp                  , &  ! Minimum leaf water potential (MPa)
     root_radius  => pftcon%root_radius             , &  ! Fine root radius (m)
     root_density => pftcon%root_density            , &  ! Fine root density (g biomass / m3 root)
-    root_resist  => pftcon%root_resist             , &  ! Hydraulic resistivity of root tissue (MPa.s.g/mmol H2O)
+    !root_resist  => pftcon%root_resist             , &  ! Hydraulic resistivity of root tissue (MPa.s.g/mmol H2O)
     dz           => col%dz                         , &  ! Soil layer thickness (m)
     watsat       => soilstate_inst%watsat_col      , &  ! Soil layer volumetric water content at saturation (porosity)
     hksat        => soilstate_inst%hksat_col       , &  ! Soil layer hydraulic conductivity at saturation (mm H2O/s)
@@ -145,9 +147,10 @@ contains
     rsoil        => mlcanopy_inst%rsoil            , &  ! Soil hydraulic resistance (MPa.s.m2/mmol H2O)
     soil_et_loss => mlcanopy_inst%soil_et_loss       &  ! Fraction of total transpiration from each soil layer (-)
     )
-
+    minlwp = -2._r8 !jsong
     ! Soil and root resistances for each layer
-
+    head = denh2o*grav*1.e-06_r8
+    root_resist=75._r8
     do f = 1, num_exposedvegp
        p = filter_exposedvegp(f)
        c = patch%column(p)
@@ -183,7 +186,7 @@ contains
 
           ! Root-to-stem resistance (MPa.s.m2/mmol H2O)
 
-          soilr2 = root_resist(patch%itype(p)) / (root_biomass_density * dz(c,j))
+          soilr2 = root_resist / (root_biomass_density * dz(c,j))
 
           ! Belowground resistance (MPa.s.m2/mmol H2O) 
 
@@ -198,7 +201,7 @@ contains
           ! Maximum transpiration for each layer (mmol H2O/m2/s). No negative
           ! transpiration and no transpiration from frozen soil.
 
-          evap(j) = (smp_mpa(j) - minlwp(patch%itype(p))) / soilr
+          evap(j) = (smp_mpa(j) - minlwp) / soilr
           evap(j) = max (evap(j), 0._r8)
           if (h2osoi_ice(c,j) > 0._r8) evap(j) = 0._r8
 
@@ -226,7 +229,7 @@ contains
        if (totevap > 0._r8) then
           psis(p) = psis(p) / totevap
        else
-          psis(p) = minlwp(patch%itype(p))
+          psis(p) = minlwp
        end if
 
     end do

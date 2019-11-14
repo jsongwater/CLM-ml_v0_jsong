@@ -6,6 +6,8 @@ module LeafBoundaryLayerMod
   !
   ! !USES:
   use shr_kind_mod, only : r8 => shr_kind_r8
+  use clm_varctl, only : iulog, incanopy
+  use abortutils, only : endrun
   !
   ! !PUBLIC TYPES:
   implicit none
@@ -62,6 +64,7 @@ contains
     real(r8) :: re                 ! Reynolds number (dimensionless)
     real(r8) :: gr                 ! Grashof number (dimensionless)
     real(r8) :: b1                 ! Empirical correction factor for Nu
+    real(r8) , pointer :: wind       (:,:)
     !---------------------------------------------------------------------
 
     associate ( &
@@ -71,15 +74,28 @@ contains
     tref      => mlcanopy_inst%tref     , &  ! Air temperature at reference height (K)
     pref      => mlcanopy_inst%pref     , &  ! Air pressure at reference height (Pa)
     rhomol    => mlcanopy_inst%rhomol   , &  ! Molar density at reference height (mol/m3)
-    wind      => mlcanopy_inst%wind     , &  ! Wind speed profile (m/s)
+    !wind      => mlcanopy_inst%wind     , &  ! Wind speed profile (m/s)
     tair      => mlcanopy_inst%tair     , &  ! Air temperature profile (K)
     tleaf     => mlcanopy_inst%tleaf    , &  ! Leaf temperature (K)
-    dpai      => mlcanopy_inst%dpai     , &  ! Layer plant area index (m2/m2)
+
                                              ! *** Output ***
     gbh       => mlcanopy_inst%gbh      , &  ! Leaf boundary layer conductance, heat (mol/m2 leaf/s)
     gbv       => mlcanopy_inst%gbv      , &  ! Leaf boundary layer conductance, H2O (mol H2O/m2 leaf/s)
     gbc       => mlcanopy_inst%gbc        &  ! Leaf boundary layer conductance, CO2 (mol CO2/m2 leaf/s)
     )
+
+    wind      => mlcanopy_inst%wind2LB
+    !if (incanopy == 0) then
+    !    wind      => mlcanopy_inst%wind
+    !else if (incanopy == 1) then
+    !    wind      => mlcanopy_inst%wind_1st
+    !else
+    !    write(iulog,*) 'incanopy==', incanopy
+    !    call endrun(msg='incanopy is not assigned')
+    !end if
+
+
+    !write(iulog,*) dleaf(patch%itype(p)), dpai(p,ic), tref(p) ,pref(p),rhomol(p), wind(p,ic), tair(p,ic), tleaf(p,ic,il)
 
     b1 = 1.5_r8
 

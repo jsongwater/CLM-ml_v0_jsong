@@ -9,6 +9,7 @@ module CanopyTurbulenceMod
   use shr_kind_mod, only : r8 => shr_kind_r8
   use abortutils, only : endrun
   use decompMod , only : bounds_type
+  use clm_varctl, only : iulog
   !
   ! !PUBLIC TYPES:
   implicit none
@@ -169,6 +170,7 @@ contains
     ncan     => mlcanopy_inst%ncan       , &  ! Number of aboveground layers
     dpai     => mlcanopy_inst%dpai       , &  ! Layer plant area index (m2/m2)
     uref     => mlcanopy_inst%uref       , &  ! Wind speed at reference height (m/s)
+    uref33     => mlcanopy_inst%uref33       , &  ! jsong Wind speed at reference height (m/s)
     tref     => mlcanopy_inst%tref       , &  ! Air temperature at reference height (K)
     eref     => mlcanopy_inst%eref       , &  ! Vapor pressure at reference height (Pa)
     co2ref   => mlcanopy_inst%co2ref     , &  ! Atmospheric CO2 at reference height (umol/mol)
@@ -207,6 +209,7 @@ contains
     obu(p) = 0._r8
     obuold(p) = 0._r8
     nmozsgn(p) = 0
+    uref(p) = uref33(p)
     ustar(p) = uref(p)     ! cannot be zero for analysis package to work
     tstar(p) = 0._r8
     qstar(p) = 0._r8
@@ -261,9 +264,10 @@ contains
     ! profiles using above- and within-canopy coupling with a roughness sublayer
     ! (RSL) parameterization 
     !
-    ! !USES:
-    use clm_varctl, only : turb_type, use_scalars
+    ! !USES:use clm_varctl, only : dtime_sub
+    use clm_varctl, only : turb_type, use_scalars,dtime_sub,incanopy,allprofiles
     use clm_varcon, only : mmh2o, mmdry, vkc
+    use clm_varpar, only :  isun, isha,nlevcanml
     use MathToolsMod, only : hybrid
     use PatchType, only : patch
     use SoilStateType, only : soilstate_type
@@ -288,6 +292,8 @@ contains
     integer  :: ic                 ! Canopy layer index
     integer  :: il                 ! Sunlit (1) or shaded (2) leaf index
     integer  :: iterate            ! CLM: 1 = iterate for Obukhov length. 0 = use specified Obukhov length
+    integer  :: nen,nst ! jsong
+    integer, parameter :: nn = 100 ! jsong
     real(r8) :: dummy              ! Dummy argument
     real(r8) :: lm                 ! Length scale for momentum (m)
     real(r8) :: beta               ! Value of u*/u(h) at canopy top
@@ -312,6 +318,10 @@ contains
     real(r8) :: psic1, psic2
     real(r8) :: ga_add
     real(r8) :: sumres
+    real(r8) :: fracgreen,dtt,mixLtop           ! jsong
+    real(r8) :: fc_prof(1:1,0:nlevcanml)! jsong
+    real(r8) :: dzs_cont(1:1,1:nlevcanml)! jsong
+    real(r8) :: kmm(1:1,0:nlevcanml), mixL(0:nlevcanml), l0,u0,z0,du0, dpai0,alpha_d,dd,procheck,tgg ! jsong
 
     real(r8) :: zdisp_most, z0m_most, zeta_most, psim_most_z0m, psim_most, zlog_most, ustar_most
     real(r8) :: z0c_most, sh_most, tstar_most, psic_most_z0c, psic_most, ts_most
@@ -319,6 +329,7 @@ contains
 
     associate ( &
                                               ! *** Input ***
+    ztop39     => mlcanopy_inst%ztop39       , &
     ztop     => mlcanopy_inst%ztop       , &  ! Canopy height (m)
     ncan     => mlcanopy_inst%ncan       , &  ! Number of aboveground layers
     ntop     => mlcanopy_inst%ntop       , &  ! Index for top leaf layer
@@ -331,11 +342,23 @@ contains
     eg       => mlcanopy_inst%eg         , &  ! Soil surface vapor pressure (Pa)
     tg       => mlcanopy_inst%tg         , &  ! Soil surface temperature (K)
     zref     => mlcanopy_inst%zref       , &  ! Reference height (m)
+    tref     => mlcanopy_inst%tref       , &  !
     uref     => mlcanopy_inst%uref       , &  ! Wind speed at reference height (m/s)
+    uref33        => mlcanopy_inst%uref33          , &
     thref    => mlcanopy_inst%thref      , &  ! Atmospheric potential temperature (K)
     cpair    => mlcanopy_inst%cpair      , &  ! Specific heat of air at constant pressure, at reference height (J/mol/K)
     z0mr     => pftcon%z0mr              , &  ! Ratio of momentum roughness length to canopy top height
     displar  => pftcon%displar           , &  ! Ratio of displacement height to canopy top height
+
+    an          => mlcanopy_inst%an       , &  ! jsong Leaf net photosynthesis (umol CO2/m2 leaf/s)
+    fdry        => mlcanopy_inst%fdry     , &  ! jsong
+    fwet        => mlcanopy_inst%fwet     , &  ! jsong
+    fracsun     => mlcanopy_inst%fracsun  , &  ! jsong
+    fracsha     => mlcanopy_inst%fracsha  , &  ! jsong
+    dlai        => mlcanopy_inst%dlai     , &  ! jsong
+    dpai        => mlcanopy_inst%dpai     ,&  ! jsong
+    nuforce     => mlcanopy_inst%nuforce         , & ! jsong
+    zuforce     => mlcanopy_inst%zuforce         , & ! jsong
                                               ! *** Output ***
     z0mg     => mlcanopy_inst%z0mg       , &  ! Roughness length of ground (m)
     Lc       => mlcanopy_inst%Lc         , &  ! Canopy density length scale (m)
@@ -353,19 +376,27 @@ contains
     eaf      => mlcanopy_inst%eaf        , &  ! Vapor pressure at canopy top (Pa)
     qaf      => mlcanopy_inst%qaf        , &  ! Specific humidity at canopy top (kg/kg)
     wind     => mlcanopy_inst%wind       , &  ! Wind speed profile (m/s)
+    wind_1stoldH   => mlcanopy_inst%wind_1stoldH       , &
+    wind_1st => mlcanopy_inst%wind_1st   , &  ! Wind speed profile (m/s)
+    wind2LB => mlcanopy_inst%wind2LB   , &  ! Wind speed profile (m/s)
+    wind_1stold => mlcanopy_inst%wind_1stold, &  ! Wind speed profile (m/s)
     wind_most=> mlcanopy_inst%wind_most  , &  ! Wind speed profile from MOST (m/s)
     tair     => mlcanopy_inst%tair       , &  ! Air temperature profile (K)
     tair_most=> mlcanopy_inst%tair_most  , &  ! Air temperature profile from MOST (K)
     eair     => mlcanopy_inst%eair       , &  ! Vapor pressure profile (Pa)
     cair     => mlcanopy_inst%cair       , &  ! Atmospheric CO2 profile (umol/mol)
+    cair_old => mlcanopy_inst%cair_old   , &  ! Atmospheric CO2 profile (umol/mol)
+    cfair    => mlcanopy_inst%cfair      , &
     gah      => mlcanopy_inst%gah        , &  ! Aerodynamic conductance for a scalar above canopy (mol/m2/s)
     ga_prof  => mlcanopy_inst%ga_prof      &  ! Canopy layer aerodynamic conductance for scalars (mol/m2/s)
+
     )
 
     c = patch%column(p)
-
+    !kmm(1,0:nlevcanml) = wind_1stoldH(p,0:nlevcanml) ! jsong
     ! Initialization for first iteration
-
+    !write(iulog,*) '(1) wind_1stoldH==', wind_1stoldH
+    !write(iulog,*) '(1) wind_1stold==', wind_1stold
     if (niter == 1) then
        obuold(p) = 0._r8
        nmozsgn(p) = 0
@@ -377,9 +408,128 @@ contains
 
     ! Canopy density length scale
 
-    Lc(p) = ztop(p) / (cd * (lai(p) + sai(p)))
+    Lc(p) = ztop39(p) / (cd * (lai(p) + sai(p))) ! ztop: canopy height from htop_patch
 
+    do ic = 0,ncan(p) ! initialize wind profile within canopy
+        wind_1stoldH(p,ic) = wind_1stold(p,ic)
+    end do
     ! These are not used, but are needed to pass into the hybrid root solver
+!
+!    ! jsong: uref33 to uref at zref
+!    ! ODE uref33 to uaf
+!    ! wind_1stold wind_1stoldH  // (u1./exp((z1-z2)/lm*bb))
+!    if (1==0) then!(nuforce(p)<ncan(p)) then !jsong forcing height is lower than top reference
+!        if (ntop(p) > nuforce(p)) then ! forcing height is lower than canopy height. ODE is used to track uaf(p)
+!            if (incanopy == 0) then ! no ode use RSL equations
+!                if ((zdisp(p) < ztop(p)) .and. (zdisp(p) > 0._r8))  then
+!                    beta = ustar(p)/uaf(p)
+!                    beta = min(0.50_r8, max(beta,0.20_r8))
+!                    lm = 2._r8 * beta**3 * Lc(p)
+!                    write(iulog,*) 'uaf==', uaf(p), 'ustar(p)==', ustar(p)
+!                else
+!                    beta = beta_neutral_max
+!                    lm = 2._r8 * beta**3 * Lc(p)
+!                    !dt = beta**2 * Lc(p)
+!                    !dt = dt * (1._r8 - exp(-0.25_r8*(lai(p)+sai(p))/beta**2))
+!                    !dt = min(ztop39(p), dt)
+!                    !zdisp(p) = ztop39(p) - dt
+!
+!                   write(iulog,*) '*************** no zdisp yet (start with neutral) ***************'
+!                end if
+!                !uaf(p) = uref33(p)/exp((zuforce(p)-ztop(p))/lm*beta)
+!                uaf(p) = uref33(p)/exp((zuforce(p)-ztop(p))/(beta**2 * Lc(p))*0.5_r8)
+!
+!                write(iulog,*) 'uaf==', uaf(p), 'uref33(p), u0==', uref33(p),lm,beta,zuforce(p),ztop(p)
+!
+!            else if (incanopy == 1) then
+!                !do ic = 0,ncan(p) ! initialize wind profile within canopy
+!                !    wind_1stoldH(p,ic) = wind_1stold(p,ic)
+!                !end do
+!
+!                !C_height = ztop(p)
+!                if ((zdisp(p) < ztop(p)) .and. (zdisp(p) > 0._r8))  then
+!                   dd = zdisp(p)
+!                else
+!                   !dd = ztop39(p)*2._r8/3._r8
+!                    beta = beta_neutral_max
+!                    lm = 2._r8 * beta**3 * Lc(p)
+!                    dt = beta**2 * Lc(p)
+!                    dt = dt * (1._r8 - exp(-0.25_r8*(lai(p)+sai(p))/beta**2))
+!                    dt = min(ztop39(p), dt)
+!                    dd = ztop39(p) - dt
+!                   write(iulog,*) '*************** no zdisp yet (start with neutral) ***************'
+!                end if
+!
+!
+!                alpha_d =  (1-dd/(ztop(p)))*vkc
+!                do ic = 0,nlevcanml
+!                    if (zs(p,ic) < (alpha_d*ztop(p)/vkc)) then
+!                        mixL(ic) = vkc*zs(p,ic)
+!                    else if ( ( zs(p,ic) >= (alpha_d*ztop(p)/vkc) ) .and. (zs(p,ic) < ztop(p))  ) then
+!                           mixL(ic) = alpha_d*ztop(p)
+!                    else if (zs(p,ic) >= ztop(p)) then
+!                           mixL(ic) = vkc*(zs(p,ic)-dd)
+!                    else
+!                        call endrun (msg='l_mix')
+!                    end if
+!                end do
+!
+!
+!                nst = nuforce(p)+1
+!                nen = ntop(p)+1
+!                u0 = uref33(p)
+!                z0 = zuforce(p)
+!                !wind_1stoldH(p,nuforce(p))
+!                !wind_1stold(p,nuforce(p))
+!                if (zs(p,nuforce(p)+1)<=z0) then
+!                    write(iulog,*) 'zs=', zs
+!                    write(iulog,*) 'mixL=', mixL
+!                    write(iulog,*) 'z0=', z0
+!                    call endrun (msg='zs(p,nst)<=z0')
+!                end if
+!
+!                du0 = (wind_1stold(p,nst)-wind_1stold(p,nst-1))/(zs(p,nst)-zs(p,nst-1))
+!                !du0 = (wind_1stold(p,nst)-u0)/(zs(p,nst)-z0)
+!                if (du0 < 0._r8) then
+!                    write(iulog,*) 'zs=', zs
+!                    write(iulog,*) 'mixL=', mixL
+!                    write(iulog,*) 'z0=', z0
+!                    write(iulog,*) 'wind_1stold=', wind_1stold
+!                end if
+!                !dpai0 = dpai(p,nst)
+!                !l0 = mixL(nst)
+!
+!                dpai0 = (dpai(p,nst)-dpai(p,nst-1)) / (zs(p,nst)-zs(p,nst-1)) &
+!                         * (zs(p,nst)-z0) + dpai(p,nst-1)
+!
+!                if (dpai0 < 0._r8) then
+!                    write(iulog,*) 'dpai=', dpai
+!                    write(iulog,*) 'zs=', zs
+!                    write(iulog,*) 'z0=', z0
+!                    write(iulog,*) 'zs(p,nst)=', zs(p,nst)
+!                end if
+!
+!                l0 = (mixL(nst)-mixL(nst-1)) / (zs(p,nst)-zs(p,nst-1)) &
+!                         * (zs(p,nst)-z0) + mixL(nst-1)
+!
+!                call MidODEWind (p, cd, nst, nen, nn, l0, u0, z0, du0, dpai0, mixL, wind_1stold, mlcanopy_inst)
+!
+!                uaf(p) = (wind_1stold(p,ntop(p)+1)-wind_1stold(p,ntop(p))) / (zs(p,ntop(p)+1)-zs(p,ntop(p))) &
+!                         * (ztop(p)-zs(p,ntop(p))) + wind_1stold(p,ntop(p))
+!
+!                write(iulog,*) 'uaf==', uaf(p), 'u0==', u0, 'z0=',z0,'du0=',du0,'dpai0=',dpai0,'l0=',l0,'nst=',nst,'nen=',nen
+!                write(iulog,*) 'ztop(p)=', ztop(p),'zs(p,ntop(p))=',zs(p,ntop(p))
+!                !write(iulog,*) 'wind_1stold==', wind_1stold
+!                !write(iulog,*) 'dpai==', dpai
+!            else
+!                write(iulog,*) 'incanopy==', incanopy
+!                call endrun(msg='incanopy is not assigned')
+!            end if
+!        else    ! forcing height is higher than canopy height.
+!
+!            !uref(p) = uref33(p)
+!        end if
+!    end if
 
     ic = 0
     il = 0
@@ -396,7 +546,7 @@ contains
 
        obu0 = 100._r8          ! Initial estimate for Obukhov length (m)
        obu1 = -100._r8         ! Initial estimate for Obukhov length (m)
-       tol = 0.1_r8            ! Accuracy tolerance for Obukhov length (m)
+       tol = 0.01_r8            ! Accuracy tolerance for Obukhov length (m)
 
        dummy = hybrid ('CanopyTurbulence', p, ic, il, mlcanopy_inst, ObuFunc, obu0, obu1, tol)
        obu(p) = obu_gah(p)
@@ -410,7 +560,7 @@ contains
        obu(p) = obu_gah(p)
 
     end select
-
+    write(iulog,*) 'uref=', uref(p), 'uaf(p)=',uaf(p),'obu(p)=',obu(p),'uref33(p)=',uref33(p)
     ! Check to see if Obukhov length is changing signs between iterations.
     ! If too many changes in sign, set it to a near-neutral value.
 
@@ -435,13 +585,14 @@ contains
        case (1:3)
 
        dt = ztop(p) - zdisp(p)
-       beta = ustar(p) / uaf(p)
+       beta = ustar(p) / uaf(p) ! Value of u*/u(h) at canopy top
 
        do ic = ntop(p)+1, ncan(p)
           zeta = (zs(p,ic) - zdisp(p)) / obu(p)
           call GetPsiRSL (zs(p,ic), ztop(p), dt, beta, zeta, obu(p), PrSc(p), psim, psic)
           zlog_m = log((zs(p,ic)-zdisp(p)) / (ztop(p)-zdisp(p)))
           wind(p,ic) = ustar(p) / vkc * (zlog_m + psim)
+          wind_1st(p,ic) = wind(p,ic)
        end do
 
     end select
@@ -483,17 +634,18 @@ contains
     select case (turb_type)
        case (1, 2)
 !         eta = min (beta/lm*ztop(p), 10._r8)
-          eta = min (beta/lm*ztop(p), 20._r8)
+          eta = min (beta/lm*ztop39(p), 20._r8)
        case (3, 4)
           eta = 3._r8
     end select
 
-    beta_over_lm = eta / ztop(p)
+    beta_over_lm = eta / ztop39(p)
 !   beta_over_lm = beta / lm
 
     do ic = 1, ntop(p)
        wind(p,ic) = uaf(p) * exp((zs(p,ic) - ztop(p)) * beta_over_lm)
-       wind(p,ic) = max(wind(p,ic), 0.1_r8)
+       wind_1st(p,ic) = wind(p,ic)
+       wind2LB(p,ic) = max(wind(p,ic), 0.1_r8)
     end do
 
     ! Scalar eddy diffusivity at canopy top
@@ -502,7 +654,9 @@ contains
 
        case (1:3)
 
-       kc_at_hc = 2._r8 * beta**3 * Lc(p) * ustar(p) / PrSc(p)
+       kc_at_hc = 2._r8 * beta**3 * Lc(p) * ustar(p) / PrSc(p) ! lm=2._r8 * beta**3 * Lc(p)
+
+
 
        case (4)
 
@@ -520,13 +674,15 @@ contains
 
     end select
 
+    mixLtop = (2._r8 * beta**3 * Lc(p))*sqrt(ustar(p)/(beta*PrSc(p)*uaf(p))) ! jsong mixing-length at the top
+
     ! Within-canopy aerodynamic conductances: these are defined between
     ! zs(i) and zs(i+1). Note the special case for the top layer to the
     ! canopy height.
 
     do ic = 1, ntop(p)-1
-       zl = zs(p,ic) - ztop(p)
-       zu = zs(p,ic+1) - ztop(p)
+       zl = zs(p,ic) - ztop(p) ! negative
+       zu = zs(p,ic+1) - ztop(p) ! negative
 !      res = PrSc(p) / (beta * ustar(p)) * (exp(-zl*beta_over_lm) - exp(-zu*beta_over_lm))
        res = 1._r8 / (kc_at_hc * beta_over_lm) * (exp(-zl*beta_over_lm) - exp(-zu*beta_over_lm))
        ga_prof(p,ic) = rhomol(p) / res
@@ -535,8 +691,8 @@ contains
     ! Special case for top layer: conductance to top of canopy
 
     ic = ntop(p)
-    zl = zs(p,ic) - ztop(p)
-    zu = ztop(p) - ztop(p)
+    zl = zs(p,ic) - ztop(p) ! negative
+    zu = ztop(p) - ztop(p) ! zero
 !   res = PrSc(p) / (beta * ustar(p)) * (exp(-zl*beta_over_lm) - exp(-zu*beta_over_lm))
     res = 1._r8 / (kc_at_hc * beta_over_lm) * (exp(-zl*beta_over_lm) - exp(-zu*beta_over_lm))
     ga_prof(p,ic) = rhomol(p) / res
@@ -568,6 +724,9 @@ contains
     sumres = sumres + 1._r8 / ga_add
 
     if (abs(1._r8/sumres - gah(p)) > 1.e-06_r8) then
+        write(iulog,*) 'ga_prof=',ga_prof
+        write(iulog,*) 'wind=',wind
+        write(iulog,*) '1._r8/sumres', 1._r8/sumres ,'gah(p)' ,gah(p),'1._r8 / ga_add',1._r8 / ga_add
        call endrun (msg=' ERROR: CanopyTurbulenceMod: above-canopy aerodynamic conductance error')
     end if
 
@@ -603,6 +762,172 @@ contains
     wind(p,0) = 0._r8
     tair(p,0) = tg(p)
     eair(p,0) = eg(p)
+    if (incanopy == 0) then
+        do ic = 0,ncan(p) ! initialize wind profile within canopy
+            !wind_1st(p,ic) = wind(p,ic)
+            wind_1stold(p,ic) = wind_1st(p,ic)
+        end do
+    else if (incanopy == 1) then
+        if (allprofiles == 0) then
+            if (ntop(p) > nuforce(p)) then
+                procheck = 0._r8
+                do ic = 0,nuforce(p)-1 ! initialize wind profile within canopy
+                    procheck = min(procheck,wind_1stold(p,ic))
+                    wind_1stold(p,ic)=wind_1stoldH(p,ic)*wind_1stold(p,nuforce(p))/wind_1stoldH(p,nuforce(p))
+                    wind_1st(p,ic) = -999._r8
+                end do
+                if (procheck < 0._r8) then
+                    write(iulog,*) 'procheck is not passed procheck < 0._r8'
+                    do ic = 0,nuforce(p)-1
+                        wind_1stold(p,ic)=float(ic)*wind_1stold(p,nuforce(p))/float(nuforce(p))
+                    end do
+                end if
+                !do ic = ntop(p),ncan(p)
+                !    wind_1stold(p,ic) = wind(p,ic)
+                !    wind_1st(p,ic) = wind(p,ic)
+                !end do
+
+                !call ScalarProfileIterativeWind (p,cd, nuforce(p)+1, uref(p), kmm, wind_1stold, wind_1st,mixLtop, mlcanopy_inst)
+                call ScalarProfileIterativeWind (p,cd, nuforce(p)+1, wind_1stold(p,nuforce(p)+1), kmm, wind_1stold, wind_1st,mixLtop, mlcanopy_inst)
+
+                alpha_d =  (1-zdisp(p)/(ztop(p)))*vkc
+
+                do ic = nuforce(p)+1,ntop(p)
+                    if (zs(p,ic) < (alpha_d*ztop(p)/vkc)) then
+                        mixL(ic) = vkc*zs(p,ic)
+                    else if ( ( zs(p,ic) >= (alpha_d*ztop(p)/vkc) ) .and. (zs(p,ic) < ztop(p))  ) then
+                           mixL(ic) = alpha_d*ztop(p)
+                    else if (zs(p,ic) >= ztop(p)) then
+                           mixL(ic) = vkc*(zs(p,ic)-dd)
+                    else
+                        call endrun (msg='l_mix')
+                    end if
+
+
+                    kmm(1,ic) = mixL(ic)*mixL(ic)*abs((wind_1stold(p,ic)-wind_1stold(p,ic-1))/(zs(p,ic)-zs(p,ic-1)))
+
+                    !wind_1stold(p,ic) = wind(p,ic)
+                    wind_1st(p,ic) = wind_1stold(p,ic)
+                end do
+
+                do ic = ntop(p),ncan(p)
+                    !wind_1stold(p,ic) = wind(p,ic)
+                    wind_1st(p,ic) = wind(p,ic)
+                end do
+
+
+            else
+                procheck = 0._r8
+                do ic = 0,ntop(p)-1 ! initialize wind profile within canopy
+                    procheck = min(procheck,wind_1stold(p,ic))
+                    wind_1stold(p,ic)=wind_1stoldH(p,ic)*wind_1stold(p,ntop(p))/wind_1stoldH(p,ntop(p))
+                    wind_1st(p,ic) = -999._r8
+                end do
+                if (procheck < 0._r8) then
+                    write(iulog,*) 'procheck is not passed procheck < 0._r8'
+                    do ic = 0,ntop(p)-1
+                        wind_1stold(p,ic)=float(ic)*wind_1stold(p,nuforce(p))/float(ntop(p))
+                    end do
+                end if
+
+
+                !ic = ntop(p)
+                !do ic = ntop(p),ncan(p)
+                !    wind_1stold(p,ic) = wind(p,ic)
+                !    wind_1st(p,ic) = wind(p,ic)
+                !end do
+
+                !call ScalarProfileIterativeWind (p,cd,ntop(p), uref(p), kmm, wind_1stold, wind_1st,mixLtop, mlcanopy_inst)
+                call ScalarProfileIterativeWind (p,cd,ntop(p), wind_1stold(p,ntop(p)), kmm, wind_1stold, wind_1st,mixLtop, mlcanopy_inst)
+
+
+
+                do ic = ntop(p)+1,ncan(p)
+                    !wind_1stold(p,ic) = wind(p,ic)
+                    wind_1st(p,ic) = wind(p,ic)
+                end do
+
+            end if
+
+            if (wind_1st(p,nuforce(p)+1)<=uref33(p)) then
+                write(iulog,*) 'zs=', zs
+                write(iulog,*) 'wind_1stold=', wind_1stold
+                write(iulog,*) 'wind_1st=', wind_1st
+                write(iulog,*) 'wind_1stoldH=', wind_1stoldH
+                call endrun (msg='zs(p,nst)<=z0')
+            end if
+
+            write(iulog,*) '-----------------------------------'
+            write(iulog,*) 'Origin ga_prof(p,ntop(p))==', ga_prof(p,ntop(p)-1), ga_prof(p,ntop(p)), ga_prof(p,ntop(p)+1)
+
+        else if (allprofiles == 1) then
+            do ic = 0,ncan(p) ! initialize wind profile within canopy
+                wind_1stold(p,ic)=wind_1stold(p,ic)*wind(p,ncan(p))/wind_1stold(p,ncan(p))
+                wind_1st(p,ic) = -999._r8
+            end do
+            !call ScalarProfileIterativeWind (p,cd,ncan(p), uref(p), kmm, wind_1stold, wind_1st,mixLtop, mlcanopy_inst)
+            call ScalarProfileIterativeWind (p,cd,ncan(p), wind(p,ncan(p)), kmm, wind_1stold, wind_1st,mixLtop, mlcanopy_inst)
+            write(iulog,*) '-----------------------------------'
+            write(iulog,*) 'Origin ga_prof(p,ncan(p))==', ga_prof(p,ncan(p)-1), ga_prof(p,ncan(p))
+        else
+            write(iulog,*) 'allprofiles==', allprofiles
+            call endrun(msg='incanopy is not assigned')
+        end if
+
+
+        do ic = 0,ncan(p) ! initialize wind profile within canopy
+            !wind_1stoldH(p,ic) = wind_1st(p,ic)
+            wind_1stold(p,ic) = wind_1st(p,ic)
+        end do
+    else
+        write(iulog,*) 'incanopy==', incanopy
+        call endrun(msg='incanopy is not assigned')
+    end if
+
+    if (incanopy == 0) then
+        !write(iulog,*) 'ga = ',ga_prof
+        !write(iulog,*) 'wind_1st',wind_1st
+    else if (incanopy == 1) then
+        if (allprofiles == 0) then
+            do ic = 0,ntop(p)
+                wind2LB(p,ic) =max(wind_1st(p,ic), 0.1_r8)
+                ga_prof(p,ic)=kmm(p,ic)*rhomol(p)/(zs(p,ic+1)-zs(p,ic)) ! m2/s * mol / m3 / m = mol/m2/s
+                res = min (rhomol(p)/ga_prof(p,ic), 500._r8)
+                ga_prof(p,ic) = rhomol(p) / res
+            end do
+
+            !ic = ntop(p)
+            !ga_prof(p,ic) = kmm(p,ic)*rhomol(p)/(zs(p,ic+1)-zs(p,ic)) ! it should be (ztop(p) - zs(p,ic)) but kmm(p,ic) is based on normal dz
+            write(iulog,*) 'ML ga_prof(p,ntop(p))==', ga_prof(p,ntop(p)-1), ga_prof(p,ntop(p)), ga_prof(p,ntop(p)+1)
+            write(iulog,*) 'ga_add==', ga_add
+            !ga_prof(p,ic) = 1._r8 / (1._r8 / ga_prof(p,ic) + 1._r8 / ga_add)
+
+            !write(iulog,*) 'ga = ',ga_prof
+            !write(iulog,*) 'wind_1st',wind_1st
+         else if (allprofiles == 1) then
+            do ic = 0,ntop(p)
+                wind2LB(p,ic) =max(wind_1st(p,ic), 0.1_r8)
+                ga_prof(p,ic)=kmm(p,ic)*rhomol(p)/(zs(p,ic+1)-zs(p,ic)) ! m2/s * mol / m3 / m = mol/m2/s
+                res = min (rhomol(p)/ga_prof(p,ic), 500._r8)
+                ga_prof(p,ic) = rhomol(p) / res
+            end do
+            do ic = ntop(p)+1,ncan(p)
+                wind2LB(p,ic) =max(wind_1st(p,ic), 0.1_r8)
+                ga_prof(p,ic)=kmm(p,ic)*rhomol(p)/(zs(p,ic+1)-zs(p,ic)) ! m2/s * mol / m3 / m = mol/m2/s
+            end do
+            !ic = ncan(p)
+            !ga_prof(p,ic) = kmm(p,ic)*rhomol(p)/(zs(p,ic)-zs(p,ic-1)) ! it should be (ztop(p) - zs(p,ic)) but kmm(p,ic) is based on normal dz
+            write(iulog,*) 'ML ga_prof(p,ncan(p))==', ga_prof(p,ncan(p)-1), ga_prof(p,ncan(p))
+            write(iulog,*) 'ga_add==', ga_add
+            !ga_prof(p,ic) = 1._r8 / (1._r8 / ga_prof(p,ic) + 1._r8 / ga_add)
+         else
+            write(iulog,*) 'allprofiles==', allprofiles
+            call endrun(msg='incanopy is not assigned')
+         end if
+    else
+        write(iulog,*) 'incanopy==', incanopy
+        call endrun(msg='incanopy is not assigned')
+    end if
 
     ! Calculate within-canopy scalar profiles for temperature and vapor pressure
     ! using an implicit solution
@@ -617,18 +942,54 @@ contains
     ! Water vapor: scalar is e/P (mol/mol) and flux is mol/m2/s
     ! CO2: scalar is c (umol/mol) and flux is umol/m2/s
 
-    ! call ScalarProfileIterative (ncan(p), tref(p), ga_prof(p,:), sh_prof(p,:), &
+    ! call ScalarProfileIterative (ncan(p), tref(p), ga_prof(p,:), sh_prof(p,:), &  ! sh_prof w/m^2   cpair(J/mol/K)
     ! 1._r8/cpair(p), tair_old(p,:), tair(p,:))
 
-    ! call ScalarProfileIterative (ncan(p), eref(p), ga_prof(p,:), et_prof(p,:), &
+    ! call ScalarProfileIterative (ncan(p), eref(p), ga_prof(p,:), et_prof(p,:), &  ! et_prof (mol/m2/s)
     ! pref(p), eair_old(p,:), eair(p,:))
 
-    ! call ScalarProfileIterative (ncan(p), co2ref(p), ga_prof(p,:), fc_prof(p,:), &
-    ! 1._r8, cair_old(p,:), cair(p,:))
-
-    do ic = 0, ncan(p)
+    cair(p,0) = co2ref(p)
+    fc_prof(1,0) = 0._r8
+        !% SOIL RESPIRATION [umol CO2/ m^2 ground / s]
+        !Fc_soil = Ro .* Q10.^((Tsoil - 10)/10);                             % See (Lloyd and Taylor, 1994) & (Van't Hoff, 1898)
+    if (111==111) then ! jsong [test for soil respiration]
+        if (222==222) then
+            tgg = tg(p)-273.15_r8    ! local fitted 4.6861 with 22.4, 6.2354 with 25
+            fc_prof(1,0) = -(1.2_r8 * 3.1_r8**((tgg - 10._r8)/10._r8))
+        else
+            tgg = 0.454_r8*(tref(p)-273.15_r8)+11.855_r8  ! local fitted 4.6861 with 22.4, 6.2354 with 25
+            fc_prof(1,0) = -(2.4_r8 * 1.7_r8**((tgg - 10._r8)/10._r8))
+        end if
+    else
+        fc_prof(1,0) = -(0.3_r8 * 2._r8**((tg(p)-273.15_r8 - 10._r8)/10._r8)) ! usual case from other paper 0.7086 with 22.4, 0.8485 with 25
+    end if
+    dtt = dtime_sub
+    do ic = 1, ncan(p)-1
        cair(p,ic) = co2ref(p)
+       fracgreen = fdry(p,ic) / (1._r8 - fwet(p,ic))
+       fc_prof(1,ic) = (an(p,ic,isun)*fracsun(p,ic) + an(p,ic,isha)*fracsha(p,ic)) * dlai(p,ic) * fracgreen ! an = umol co2/m2 leaf/s
+       dzs_cont(1,ic) = (zs(p,ic+1)-zs(p,ic))*rhomol(p)/dtt ! mol/m2/s
     end do
+    ic = ncan(p)
+    cair(p,ic) = co2ref(p)
+    fracgreen = fdry(p,ic) / (1._r8 - fwet(p,ic))
+    fc_prof(1,ic) = (an(p,ic,isun)*fracsun(p,ic) + an(p,ic,isha)*fracsha(p,ic)) * dlai(p,ic) * fracgreen ! an = umol co2/m2 leaf/s
+    dzs_cont(1,ic) = (zref(p)-zs(p,ic))*rhomol(p)/dtt ! mol/m2/s
+
+! rhomol, dtime_sub, dzs_cont
+
+
+     call ScalarProfileIterative (ncan(p), co2ref(p), ga_prof(p,:), -fc_prof(1,:), & ! fc_prof umol/m2/s
+     1._r8, cair_old(p,:), cair(p,:), dzs_cont(1,:), 1)
+
+
+
+    do ic = 1, ncan(p)-1
+       cfair(p,ic) = -(cair(p,ic+1)-cair(p,ic)) * ga_prof(p,ic)
+    end do
+    ic = ncan(p)
+    cfair(p,ic) = -(co2ref(p) - cair(p,ic))  * ga_prof(p,ic)
+
 
     if (.not. use_scalars) then
        do ic = 1, ntop(p)
@@ -683,7 +1044,7 @@ contains
   end subroutine CanopyTurbulence
 
   !-----------------------------------------------------------------------
-  function ObuFunc (p, ic, il, mlcanopy_inst, obu_val) result(obu_dif)
+  function ObuFunc (p, icc, il, mlcanopy_inst, obu_val) result(obu_dif)
     !
     ! !DESCRIPTION:
     ! This is the function to solve for the Obukhov length (obu). For the current
@@ -693,23 +1054,28 @@ contains
     !
     ! !USES:
     use clm_varcon, only : grav, vkc
-    use clm_varctl, only : turb_type
+    use clm_varctl, only : turb_type, incanopy, allprofiles
     use CanopyFluxesMultilayerType, only : mlcanopy_type
+    use clm_varpar, only :  nlevcanml  !jsong
     !
     ! !ARGUMENTS:
     implicit none
     integer, intent(in)  :: p               ! Patch index for CLM g/l/c/p hierarchy
-    integer, intent(in)  :: ic              ! Aboveground layer index
+    integer, intent(in)  :: icc              ! Aboveground layer index
     integer, intent(in)  :: il              ! Sunlit (1) or shaded (2) leaf index
     real(r8), intent(in) :: obu_val         ! Input value for Obukhov length (m)
     type(mlcanopy_type), intent(inout) :: mlcanopy_inst
     !
     ! !LOCAL VARIABLES:
+    integer  :: nen,nst,ic ! jsong
+    integer, parameter :: nn = 50 ! jsong
+    real(r8) :: mixL(0:nlevcanml),l0,u0,z0,du0, dpai0,alpha_d,dd ! jsong
     real(r8) :: c1                          ! Parameter to calculate beta_neutral
     real(r8) :: beta_neutral                ! Neutral value for beta = u*/u(h), ~0.3-0.5
     real(r8) :: beta                        ! Value of u*/u(h) at canopy top
     real(r8) :: dt                          ! Height below canopy top (dt = ztop - zdisp)
     real(r8) :: zeta                        ! Monin-Obukhov stability parameter (z-d)/L
+    real(r8) :: zeta33, obu33,psim33, psic33,zlog33  ! jsong Monin-Obukhov stability parameter (z-d)/L
     real(r8) :: psim                        ! psi function for momentum
     real(r8) :: psic                        ! psi function for scalars
     real(r8) :: zlog                        ! log((zref-zdisp)/(ztop-zdisp))
@@ -719,19 +1085,29 @@ contains
 
     associate ( &
                                             ! *** Input ***
+    ztop39    => mlcanopy_inst%ztop39      , &  ! Canopy height (m)
     ztop    => mlcanopy_inst%ztop      , &  ! Canopy height (m)
     z0mg    => mlcanopy_inst%z0mg      , &  ! Roughness length of ground (m)
     lai     => mlcanopy_inst%lai       , &  ! Leaf area index of canopy (m2/m2)
     sai     => mlcanopy_inst%sai       , &  ! Stem area index of canopy (m2/m2)
     Lc      => mlcanopy_inst%Lc        , &  ! Canopy density length scale (m)
     zref    => mlcanopy_inst%zref      , &  ! Reference height (m)
-    uref    => mlcanopy_inst%uref      , &  ! Wind speed at reference height (m/s)
+    uref     => mlcanopy_inst%uref       , &  ! Wind speed at reference height (m/s)
+    uref33        => mlcanopy_inst%uref33          , &
     rhomol  => mlcanopy_inst%rhomol    , &  ! Molar density at reference height (mol/m3)
     qref    => mlcanopy_inst%qref      , &  ! Specific humidity at reference height (kg/kg)
     qaf      => mlcanopy_inst%qaf      , &  ! Specific humidity at canopy top (kg/kg)
     thref   => mlcanopy_inst%thref     , &  ! Atmospheric potential temperature (K)
     thvref  => mlcanopy_inst%thvref    , &  ! Atmospheric virtual potential temperature (K)
     taf     => mlcanopy_inst%taf       , &  ! Air temperature at canopy top (K)
+    nuforce     => mlcanopy_inst%nuforce        , & ! jsong
+    zuforce     => mlcanopy_inst%zuforce        , & ! jsong
+    ntop        => mlcanopy_inst%ntop           , & ! jsong
+    ncan        => mlcanopy_inst%ncan           , & ! jsong
+    wind_1stoldH      => mlcanopy_inst%wind_1stoldH         , & ! jsong
+    wind_1stold => mlcanopy_inst%wind_1stold    , & ! jsong
+    zs          => mlcanopy_inst%zs             , & ! jsong
+    dpai        => mlcanopy_inst%dpai           , & ! jsong
                                             ! *** Output ***
     ustar   => mlcanopy_inst%ustar     , &  ! Friction velocity (m/s)
     tstar   => mlcanopy_inst%tstar     , &  ! Temperature scale (K)
@@ -757,7 +1133,7 @@ contains
     select case (turb_type)
        case (1, 3)
           c1 = (vkc / log((ztop(p) + z0mg(p))/z0mg(p)))**2
-          beta_neutral = min( sqrt(c1 + cr*(lai(p)+sai(p))), beta_neutral_max)
+          beta_neutral = min( sqrt(c1 + cr*(lai(p)+sai(p))), beta_neutral_max) ! beta_neutral == beta_neutral_max = 0.35 (always in our case); cr=0.3 for beta neutral
        case (2)
           beta_neutral = vkc / 2._r8
     end select
@@ -770,8 +1146,9 @@ contains
 
     dt = beta**2 * Lc(p)
     dt = dt * (1._r8 - exp(-0.25_r8*(lai(p)+sai(p))/beta**2))
-    dt = min(ztop(p), dt)
-    zdisp(p) = ztop(p) - dt
+    dt = min(ztop39(p), dt)
+    zdisp(p) = ztop39(p) - dt
+    dt = ztop(p) - zdisp(p) ! jsong recalculate dt
 
     if ((zref(p) - zdisp(p)) < 0._r8) then
        call endrun (msg=' ERROR: CanopyTurbulenceMod: ObuFunc error, zdisp height > zref')
@@ -807,15 +1184,144 @@ contains
     ! Friction velocity
 
     zlog = log((zref(p)-zdisp(p)) / (ztop(p)-zdisp(p)))
-    ustar(p) = uref(p) * vkc / (zlog + psim)
 
-    ! Wind speed at canopy height
+    if (nuforce(p)<ncan(p)) then ! jsong forcing height is lower than top reference
+        if (ntop(p) > nuforce(p)) then ! jsong  forcing height is lower than canopy height. ODE is used to track uaf(p)
+            if (incanopy == 0) then ! no ode use RSL equations
+                !if ((zdisp(p) < ztop(p)) .and. (zdisp(p) > 0._r8))  then
+                    !beta = ustar(p)/uaf(p)
+                    !beta = min(0.50_r8, max(beta,0.20_r8))
+                    !lm = 2._r8 * beta**3 * Lc(p)
+                    !write(iulog,*) 'uaf==', uaf(p), 'ustar(p)==', ustar(p)
+                !else
+                    !beta = beta_neutral_max
+                    !lm = 2._r8 * beta**3 * Lc(p)
+                    !dt = beta**2 * Lc(p)
+                    !dt = dt * (1._r8 - exp(-0.25_r8*(lai(p)+sai(p))/beta**2))
+                    !dt = min(ztop39(p), dt)
+                    !zdisp(p) = ztop39(p) - dt
 
-    uaf(p) = ustar(p) / beta
+                   !write(iulog,*) '*************** no zdisp yet (start with neutral) ***************'
+                !end if
+                !uaf(p) = uref33(p)/exp((zuforce(p)-ztop(p))/lm*beta)
+                !uaf(p) = uref33(p)/exp((zuforce(p)-ztop(p))/lm*beta)
+                uaf(p) = uref33(p)/exp((zuforce(p)-ztop(p))/(beta**2 * Lc(p))*0.5_r8)
+                !ustar(p) = uaf(p) * beta
+                !uref(p) = ustar(p) * (zlog + psim) / vkc
 
+                !write(iulog,*) 'uaf==', uaf(p), 'uref33(p), u0==', uref33(p),lm,beta,zuforce(p),ztop(p)
+
+            else if (incanopy == 1) then
+                do ic = 0,ncan(p) ! initialize wind profile within canopy
+                    wind_1stold(p,ic) = wind_1stoldH(p,ic)
+                end do
+
+                !C_height = ztop(p)
+                !if ((zdisp(p) < ztop(p)) .and. (zdisp(p) > 0._r8))  then
+                dd = zdisp(p)
+                !else
+                !   !dd = ztop39(p)*2._r8/3._r8
+                !    beta = beta_neutral_max
+                !    lm = 2._r8 * beta**3 * Lc(p)
+                !    dt = beta**2 * Lc(p)
+                !    dt = dt * (1._r8 - exp(-0.25_r8*(lai(p)+sai(p))/beta**2))
+                !    dt = min(ztop39(p), dt)
+                !    dd = ztop39(p) - dt
+                !   write(iulog,*) '*************** no zdisp yet (start with neutral) ***************'
+                !end if
+
+
+                alpha_d =  (1-dd/(ztop(p)))*vkc
+                do ic = 0,nlevcanml
+                    if (zs(p,ic) < (alpha_d*ztop(p)/vkc)) then
+                        mixL(ic) = vkc*zs(p,ic)
+                    else if ( ( zs(p,ic) >= (alpha_d*ztop(p)/vkc) ) .and. (zs(p,ic) < ztop(p))  ) then
+                           mixL(ic) = alpha_d*ztop(p)
+                    else if (zs(p,ic) >= ztop(p)) then
+                           mixL(ic) = vkc*(zs(p,ic)-dd)
+                    else
+                        call endrun (msg='l_mix')
+                    end if
+                end do
+
+
+                nst = nuforce(p)+1
+                nen = ntop(p)+1
+                u0 = uref33(p)
+                z0 = zuforce(p)
+                !wind_1stoldH(p,nuforce(p))
+                !wind_1stold(p,nuforce(p))
+                if (zs(p,nuforce(p)+1)<=z0) then
+                    write(iulog,*) 'zs=', zs
+                    write(iulog,*) 'mixL=', mixL
+                    write(iulog,*) 'z0=', z0
+                    call endrun (msg='zs(p,nst)<=z0')
+                end if
+
+                du0 = (wind_1stold(p,nst)-wind_1stold(p,nst-1))/(zs(p,nst)-zs(p,nst-1))
+                !du0 = (wind_1stold(p,nst)-u0)/(zs(p,nst)-z0)
+                if (du0 < 0._r8) then
+                    write(iulog,*) 'zs=', zs
+                    write(iulog,*) 'mixL=', mixL
+                    write(iulog,*) 'z0=', z0
+                    write(iulog,*) 'wind_1stold=', wind_1stold
+                end if
+                !dpai0 = dpai(p,nst)
+                !l0 = mixL(nst)
+
+                dpai0 = (dpai(p,nst)-dpai(p,nst-1)) / (zs(p,nst)-zs(p,nst-1)) &
+                         * (zs(p,nst)-z0) + dpai(p,nst-1)
+
+                if (dpai0 < 0._r8) then
+                    write(iulog,*) 'dpai=', dpai
+                    write(iulog,*) 'zs=', zs
+                    write(iulog,*) 'z0=', z0
+                    write(iulog,*) 'zs(p,nst)=', zs(p,nst)
+                end if
+
+                l0 = (mixL(nst)-mixL(nst-1)) / (zs(p,nst)-zs(p,nst-1)) &
+                         * (zs(p,nst)-z0) + mixL(nst-1)
+
+                call MidODEWind (p, cd, nst, nen, nn, l0, u0, z0, du0, dpai0, mixL, wind_1stold, mlcanopy_inst)
+
+                uaf(p) = (wind_1stold(p,ntop(p)+1)-wind_1stold(p,ntop(p))) / (zs(p,ntop(p)+1)-zs(p,ntop(p))) &
+                         * (ztop(p)-zs(p,ntop(p))) + wind_1stold(p,ntop(p))
+
+                !write(iulog,*) 'uaf==', uaf(p), 'u0==', u0, 'z0=',z0,'du0=',du0,'dpai0=',dpai0,'l0=',l0,'nst=',nst,'nen=',nen
+                !write(iulog,*) 'ztop(p)=', ztop(p),'zs(p,ntop(p))=',zs(p,ntop(p))
+            end if
+            !!
+            !jsong uaf from ODE so
+            ustar(p) = uaf(p) * beta
+
+            !jsong
+            uref(p) = ustar(p) * (zlog + psim) / vkc
+
+             !write(iulog,*) 'beta=', beta,'zlog=', zlog,'psim=', psim, 'Lc=', Lc,'ustar=',ustar
+        ! Wind speed at canopy height
+        else  ! forcing height is higher than canopy height.
+            obu33 = obu(p)
+            zeta33 = (zuforce(p) - zdisp(p)) / obu33
+            if (zeta33 >= 0._r8) then
+               zeta33 = min(1._r8, max(zeta33,0.01_r8))
+            else
+               zeta33 = max(-2._r8, min(zeta33,-0.01_r8))
+            end if
+            obu33 = (zuforce(p) - zdisp(p)) / zeta33
+
+            call GetPsiRSL (zuforce(p), ztop(p), dt, beta, zeta33, obu33, PrSc(p), psim33, psic33)
+            zlog33 = log((zuforce(p)-zdisp(p)) / (ztop(p)-zdisp(p)))
+            ustar(p) = uref33(p) * vkc / (zlog33 + psim33)
+            uaf(p) = ustar(p) / beta
+            uref(p) = ustar(p) * (zlog + psim) / vkc
+        end if
+    else ! original
+          ustar(p) = uref(p) * vkc / (zlog + psim)
+          uaf(p) = ustar(p) / beta
+    end if
     ! Temperature scale
 
-    tstar(p) = (thref(p) - taf(p)) * vkc / (zlog + psic)
+    tstar(p) = (thref(p) - taf(p)) * vkc / (zlog + psic) ! taf = Ta at canopy top
 
     ! Water vapor scale - use units of specific humidity (kg/kg)
 
@@ -983,6 +1489,7 @@ contains
 
     select case (turb_type)
        case (1, 3)
+          call LookupPsihatINI
           call LookupPsihat ((za-hc)/dt, dt/obu, zdtgridM, dtLgridM, psigridM, psihat1)
           call LookupPsihat ((hc-hc)/dt, dt/obu, zdtgridM, dtLgridM, psigridM, psihat2)
        case (2)
@@ -1111,7 +1618,7 @@ contains
   end subroutine LookupPsihat
 
   !-----------------------------------------------------------------------
-  subroutine ScalarProfileIterative (ncan, cref, ga, s, fac, cval0, cval)
+  subroutine ScalarProfileIterative (ncan, cref, ga, s, fac, cval0, cval,dzs_cont,methods)
     !
     ! !DESCRIPTION:
     ! Form a vertical aerodynamic conductance network (ga) that when connected
@@ -1121,98 +1628,129 @@ contains
     ! and the ground flux (s(0)).
     !
     ! !USES:
-    use clm_varpar, only : nlevcan
+
+    use clm_varpar, only : nlevcanml
     use MathToolsMod, only : tridiag
     !
     ! !ARGUMENTS:
     implicit none
     integer , intent(in)  :: ncan             ! Number of layers
     real(r8), intent(in)  :: cref             ! Scalar value at reference height
-    real(r8), intent(in)  :: ga(0:nlevcan)    ! Aerodynamic conductance across each canopy layer
-    real(r8), intent(in)  :: s(0:nlevcan)     ! Scalar source for each canopy layer
+    real(r8), intent(in)  :: ga(0:nlevcanml)    ! Aerodynamic conductance across each canopy layer
+    real(r8), intent(in)  :: s(0:nlevcanml)     ! Scalar source for each canopy layer
     real(r8), intent(in)  :: fac              ! Scaling factor for fluxes
-    real(r8), intent(in)  :: cval0(0:nlevcan) ! Scalar value at each canopy layer for previous timestep
-    real(r8), intent(out) :: cval(0:nlevcan)  ! Scalar value at each canopy layer for current timestep
+    real(r8), intent(in)  :: cval0(0:nlevcanml) ! Scalar value at each canopy layer for previous timestep
+    real(r8), intent(in)  :: dzs_cont(1:nlevcanml) ! strg
+    integer, intent(in)  :: methods ! methods
+    real(r8), intent(out) :: cval(0:nlevcanml)  ! Scalar value at each canopy layer for current timestep
     !
     ! !LOCAL VARIABLES:
     integer  :: ic                            ! Canopy layer index
-    real(r8) :: a(ncan),b(ncan)               ! Entries in tridiagonal matrix
-    real(r8) :: c(ncan),d(ncan)               ! Entries in tridiagonal matrix
-    real(r8) :: u(ncan)                       ! Tridiagonal solution
+    real(r8) :: a(ncan+1),b(ncan+1)               ! Entries in tridiagonal matrix
+    real(r8) :: c(ncan+1),d(ncan+1)               ! Entries in tridiagonal matrix
+    real(r8) :: u(ncan+1)                       ! Tridiagonal solution
+    real(r8) :: u0(ncan+1), errs, errf, counting, maxiter !jsong
     integer  :: method                        ! Solution type: (1) uses cval (2) uses 0.5(cval0+cval)
     !---------------------------------------------------------------------
 
-    method = 2
+    method = methods
+    u(1:ncan) = cval0(1:nlevcanml)
 
-    select case (method)
 
-       ! Method 1 uses scalar values at time n+1 (cval)
+    !errs     = 10._r8
+    !errf     = 1.e-10_r8
+    !counting = 0
+    !maxiter = 100000
+    !
+    !do while (errs > errf .and. counting <= maxiter)
+    !    counting = counting + 1
+        u0(1:ncan) = u(1:nlevcanml)
 
-       case (1)
+        select case (method)
 
-       ! Build tridiagonal vectors at ic = 1
+           ! Method 1 uses scalar values at time n+1 (cval)
+           case (1)
 
-       ic = 1
-       a(ic) = 0._r8
-       b(ic) = ga(ic)
-       c(ic) = -ga(ic)
-       d(ic) = (s(0) + s(ic)) * fac
+           ! Build tridiagonal vectors at ic = 1
 
-       ! Build tridiagonal vectors for ic = 2 -> ncan-1
+           ic = 1
+           a(ic) = 0._r8
+           b(ic) = ga(ic) + dzs_cont(ic)
+           c(ic) = -ga(ic)
+           d(ic) = (s(0) + s(ic)) * fac + dzs_cont(ic)*u0(ic)
 
-       do ic = 2, ncan-1
-          a(ic) = -ga(ic-1)
-          b(ic) = ga(ic-1) + ga(ic)
-          c(ic) = -ga(ic)
-          d(ic) = s(ic) * fac
-       end do
+           ! Build tridiagonal vectors for ic = 2 -> ncan-1
 
-       ! Build tridiagonal vectors at ic = ncan
+           do ic = 2, ncan
+              a(ic) = -ga(ic-1)
+              b(ic) = ga(ic-1) + ga(ic) + dzs_cont(ic)
+              c(ic) = -ga(ic)
+              d(ic) = s(ic) * fac + dzs_cont(ic)*u0(ic)
+           end do
 
-       ic = ncan
-       a(ic) = -ga(ic-1)
-       b(ic) = ga(ic-1) + ga(ic)
-       c(ic) = 0._r8
-       d(ic) = cref * ga(ic) + s(ic) * fac
+           ! Build tridiagonal vectors at ic = ncan
 
-       ! Method 2 uses scalar values at time n (cval0) and n+1 (cval)
-       ! ie., 0.5 cval(n) + 0.5 cval(n+1)
+           ic = ncan+1
+           a(ic) = 0._r8
+           b(ic) = 1._r8
+           c(ic) = 0._r8
+           d(ic) = cref
 
-       case (2)
+           !a(ic) = 0._r8
+           !b(ic) = ga(ic) + dzs_cont(ic)
+           !c(ic) = 0._r8
+           !d(ic) = cref * ga(ic) + s(ic) * fac + dzs_cont(ic)*u0(ic)
 
-       ! Build tridiagonal vectors at ic = 1
+           ! Method 2 uses scalar values at time n (cval0) and n+1 (cval)
+           ! ie., 0.5 cval(n) + 0.5 cval(n+1)
 
-       ic = 1
-       a(ic) = 0._r8
-       b(ic) = 0.5_r8 * ga(ic)
-       c(ic) = -0.5_r8 * ga(ic)
-       d(ic) = (s(0) + s(ic)) * fac - 0.5_r8 * ga(ic) * cval0(ic) + 0.5_r8 * ga(ic) * cval0(ic+1)
+           case (2)
 
-       ! Build tridiagonal vectors for ic = 2 -> ncan-1
+           ! Build tridiagonal vectors at ic = 1
 
-       do ic = 2, ncan-1
-          a(ic) = -0.5_r8 * ga(ic-1)
-          b(ic) = 0.5_r8 * (ga(ic-1) + ga(ic))
-          c(ic) = -0.5_r8 * ga(ic)
-          d(ic) = s(ic) * fac + 0.5_r8 * ga(ic-1) * cval0(ic-1) &
-                - 0.5_r8 * (ga(ic-1) + ga(ic)) * cval0(ic) + 0.5_r8 * ga(ic) * cval0(ic+1)
-       end do
+           ic = 1
+           a(ic) = 0._r8
+           b(ic) = 0.5_r8 * ga(ic) + 0.5_r8 *dzs_cont(ic)
+           c(ic) = -0.5_r8 * ga(ic)
+           d(ic) = (s(0) + s(ic)) * fac - 0.5_r8 * ga(ic) * u0(ic) + 0.5_r8 * ga(ic) * u0(ic+1) + 0.5_r8 *dzs_cont(ic)*u0(ic)
 
-       ! Build tridiagonal vectors at ic = ncan
+           ! Build tridiagonal vectors for ic = 2 -> ncan-1
 
-       ic = ncan
-       a(ic) = -0.5_r8 * ga(ic-1)
-       b(ic) = 0.5_r8 * (ga(ic-1) + ga(ic))
-       c(ic) = 0._r8
-       d(ic) = cref * ga(ic) + s(ic) * fac &
-             + 0.5_r8 * ga(ic-1) * cval0(ic-1) - 0.5_r8 * (ga(ic-1) + ga(ic)) * cval0(ic)
+           do ic = 2, ncan-1
+              a(ic) = -0.5_r8 * ga(ic-1)
+              b(ic) = 0.5_r8 * (ga(ic-1) + ga(ic)) + 0.5_r8 *dzs_cont(ic)
+              c(ic) = -0.5_r8 * ga(ic)
+              d(ic) = s(ic) * fac + 0.5_r8 * ga(ic-1) * u0(ic-1) &
+                    - 0.5_r8 * (ga(ic-1) + ga(ic)) * u0(ic) + 0.5_r8 * ga(ic) * u0(ic+1) + 0.5_r8 *dzs_cont(ic)*u0(ic)
+           end do
 
-    end select
+           ! Build tridiagonal vectors at ic = ncan
+
+           ic = ncan
+           a(ic) = -0.5_r8 * ga(ic-1)
+           b(ic) = 0.5_r8 * (ga(ic-1) + ga(ic)) + 0.5_r8 *dzs_cont(ic)
+           c(ic) = 0._r8
+           d(ic) = 0.5_r8*(u0(ic)+cref) * ga(ic) + s(ic) * fac &
+                 + 0.5_r8 * ga(ic-1) * u0(ic-1) - 0.5_r8 * (ga(ic-1) + ga(ic)) * u0(ic)+ 0.5_r8 *dzs_cont(ic)*u0(ic)
+
+        end select
 
     ! Solve tridiagonal system for concentration profile
 
-    call tridiag (a, b, c, d, u, ncan)
+        call tridiag (a, b, c, d, u, ncan+1)
 
+    !    errs = maxval(abs(u0-u))
+    !    !write(iulog,*) 'u =',u
+    !    u = 0.5_r8*u+0.5_r8*u0
+
+    !end do
+    !
+    ! if (counting >= maxiter) then ! just in case too many iteration
+    !
+    !    write(iulog,*) '*** Exceed Maxiteration 100000 for CO2 profile'
+    !    call endrun (msg='MAX iteration')
+    ! end if
+    ! write(iulog,*) 'CO2 profile model interation counting = ', counting
     ! Copy concentration profile (needed because u is for levels 1 -> ncan
     ! but cval is for levels 0 -> ncan)
 
@@ -1222,6 +1760,380 @@ contains
 
   end subroutine ScalarProfileIterative
 
+   !-----------------------------------------------------------------------
+  subroutine ScalarProfileIterativeWind (p,cdin,nst, uref, kmm, uval0, uval,mixLtop,mlcanopy_inst)
+     !
+     ! !DESCRIPTION:
+     ! Form a vertical aerodynamic conductance network (ga) that when connected
+     ! with the network of leaf-level sources (s) forms a tridiagonal system of
+     ! equations that is solved to give the within-canopy vertical scalar profile (cval).
+     ! Boundary conditions are the above-canopy scalar value at the reference height (cref)
+     ! and the ground flux (s(0)).
+     !
+     ! !USES:
+
+     use clm_varpar, only : nlevcanml
+     use clm_varctl, only : allprofiles,incanopy
+     use clm_varcon, only : vkc
+     use MathToolsMod, only : tridiag
+     use CanopyFluxesMultilayerType, only : mlcanopy_type
+     use pftconMod, only : pftcon
+
+     !
+     ! !ARGUMENTS:
+     implicit none
+     integer , intent(in)  :: p
+     integer , intent(in)  :: nst             ! Number of layers
+     real(r8), intent(in)  :: uref             ! Scalar value at reference height
+     real(r8), intent(inout)  :: kmm(0:nlevcanml)    ! Aerodynamic conductance diffusivity m2/s
+     !real(r8), intent(in)  :: s(0:nlevcanml)     ! Scalar source for each canopy layer
+     real(r8), intent(in)  :: cdin              ! Cd drag coefficient
+     real(r8), intent(in)  :: uval0(0:nlevcanml) ! Scalar value at each canopy layer for previous timestep
+     !real(r8), intent(in)  :: dzs_cont(1:nlevcanml) ! strg
+     real(r8), intent(in)  :: mixLtop ! mixLtop
+     real(r8), intent(out) :: uval(0:nlevcanml)  ! Scalar value at each canopy layer for current timestep
+     type(mlcanopy_type), intent(inout) :: mlcanopy_inst
+     !
+     ! !LOCAL VARIABLES:
+     integer  :: ic                            ! Canopy layer index
+     real(r8) :: a(nst+1),b(nst+1)               ! Entries in tridiagonal matrix
+     real(r8) :: c(nst+1),d(nst+1)               ! Entries in tridiagonal matrix
+     real(r8) :: u(nst+1),uold(nst+1),LAD(nst+1)                      ! Tridiagonal solution
+     real(r8) :: z(nst+1),l_mix(nst+1)
+     real(r8) :: zd(nst),dudz(nst+1),km(nst+1)                ! Tridiagonal solution
+     real(r8) :: errs,errf,dd,C_height,kv,alpha_d,Cd
+     real(r8) :: z1,z2,y1,y2, procheck
+     integer  :: method ,counting,maxiter                      ! Solution type: (1) uses cval (2) uses 0.5(cval0+cval)
+
+     associate ( &
+                                               ! *** Input ***
+     ztop     => mlcanopy_inst%ztop       , &  ! Canopy height (m)
+     !ncan     => mlcanopy_inst%ncan       , &  ! Number of aboveground layers
+     !ntop     => mlcanopy_inst%ntop       , &  ! Index for top leaf layer
+     !lai      => mlcanopy_inst%lai        , &  ! Leaf area index of canopy (m2/m2)
+     !sai      => mlcanopy_inst%sai        , &  ! Stem area index of canopy (m2/m2)
+     zs       => mlcanopy_inst%zs         , &  ! Canopy height for scalar concentration and source (m)
+     zdisp   => mlcanopy_inst%zdisp     , &  ! Displacement Height (m)
+     !zref     => mlcanopy_inst%zref       , &  ! Reference height (m)
+     !uref     => mlcanopy_inst%uref       , &  ! Wind speed at reference height (m/s)
+     !displar  => pftcon%displar           , &  ! Ratio of displacement height to canopy top height
+     dpai        => mlcanopy_inst%dpai     &  ! jsong
+
+
+     )
+
+     !---------------------------------------------------------------------
+
+     method = incanopy !jsong
+
+     Cd = cdin
+     C_height = ztop(p)
+     dd = zdisp(p)
+     kv = vkc
+
+     alpha_d =  (1-dd/(C_height))*kv
+
+
+
+
+
+
+     z(1:nst+1) = zs(p,0:nst)
+     z(1) = zs(p,2)*sqrt(0.5_r8)
+     do ic = 1,nst+1
+         if (z(ic) < (alpha_d*C_height/kv)) then
+             l_mix(ic) = kv*z(ic)
+         else if ( ( z(ic) >= (alpha_d*C_height/kv) ) .and. (z(ic) < C_height)  ) then
+             if (method==0 .or. (alpha_d*C_height>mixLtop) .or. allprofiles==1) then
+                l_mix(ic) = alpha_d*C_height
+             else
+                z1=(alpha_d*C_height/kv)
+                z2=C_height
+                y1=alpha_d*C_height
+                y2=mixLtop
+
+                l_mix(ic) = (y2-y1)*((z2-z1)/(z(ic)-z1))**(-log(0.1)/log(0.9))+y1
+             end if
+             if ( ((l_mix(ic)-l_mix(ic-1)) < -1.e-20_r8) .and. (ic>2))  then
+                write(iulog,*) 'z=',z
+                write(iulog,*) 'l_mix=',l_mix ,'ic=',ic
+                write(iulog,*) 'abs(l_mix(ic)-l_mix(ic-1))=',abs(l_mix(ic)-l_mix(ic-1))
+                write(iulog,*) 'mixLtop=',mixLtop,'alpha_d*C_height=',alpha_d*C_height
+                call endrun (msg='l_mix')
+             end if
+
+         else if (z(ic) >= C_height) then
+             if (method==0 .or. (kv*(z(ic)-dd)>mixLtop) .or. allprofiles==1) then
+                l_mix(ic) = kv*(z(ic)-dd)
+             else
+                l_mix(ic) = mixLtop
+             end if
+             if (l_mix(ic)<l_mix(ic-1)) then
+                write(iulog,*) 'l_mix=',l_mix
+                write(iulog,*) 'mixLtop=',mixLtop,'alpha_d*C_height=',alpha_d*C_height
+                call endrun (msg='l_mix')
+             end if
+         else
+             call endrun (msg='l_mix')
+         end if
+     end do
+     u(1) = 0._r8
+     !u(2:nst+1)=uval0(1:nst)
+     LAD(1) = 0._r8
+     !LAD(2:nst+1)=dpai(1:nst)
+     do ic = 1,nst
+        zd(ic) = z(ic+1)-z(ic)
+        u(ic+1) = uval0(ic)          ! initial wind profile from the previous step is used in here
+        !u(ic+1) = uval0(ic)*ic/nst    ! initial wind profile is used in here
+        LAD(ic+1) = dpai(p,ic)/zd(ic)
+     end do
+
+     errs     = 10._r8
+     errf     = 1.e-10_r8
+     counting = 0
+     maxiter = 1000
+     do while (errs > errf .and. counting <= maxiter)
+
+         procheck = 0._r8
+         do ic = 1,nst+1
+             procheck = min(procheck, u(ic))
+             uold(ic)=u(ic)
+         end do
+         if (counting == 300) then
+            write(iulog,*) 'uold=',u
+            write(iulog,*) '*** Exceed Maxiteration 300 for 1st-order closer model'
+             do ic = 1,nst+1
+                 u(ic)=float(ic-1)*u(nst+1)/float(nst)
+             end do
+             write(iulog,*) 'unew=',u
+         end if
+         if (counting == 600) then
+            write(iulog,*) 'uold=',u
+            write(iulog,*) '*** Exceed Maxiteration 600 for 1st-order closer model'
+             do ic = 1,nst+1
+                 u(ic)=float(ic-1)*u(nst+1)/float(nst)
+             end do
+             write(iulog,*) 'unew=',u
+         end if
+         if (procheck < 0._r8)  then
+            write(iulog,*) 'uold=',u
+            write(iulog,*) '*** procheck for 1st-order closer model'
+             do ic = 1,nst+1
+                 u(ic)=float(ic-1)*u(nst+1)/float(nst)
+             end do
+             write(iulog,*) 'unew=',u
+         end if
+
+        counting = counting + 1
+     !--- dU/dz
+
+         do ic = 2,nst+1
+             dudz(ic) = (u(ic)-u(ic-1))/zd(ic-1)
+             Km(ic) = l_mix(ic)*l_mix(ic)*abs(dudz(ic))
+         end do
+         dudz(1)=dudz(2)
+         Km(1)=Km(2)
+         !write(iulog,*) '--------------------------'
+         !write(iulog,*) 'km =', km
+         ! Build tridiagonal vectors at ic = 1
+
+         ! adds one more layer and gives simple initial condition U(0) = 0
+         ic = 1
+         a(ic) = 0._r8
+         b(ic) = 1._r8
+         c(ic) = 0._r8
+         d(ic) = 0._r8
+
+         ! Build tridiagonal vectors for ic = 2 -> nst-1
+
+         do ic = 2, nst
+            a(ic) = Km(ic)+0.5_r8*(Km(ic)-Km(ic+1))
+            b(ic) = -(Km(ic)+Km(ic+1))-Cd*LAD(ic)*u(ic)*zd(ic-1)*zd(ic-1)
+            c(ic) = Km(ic+1)-0.5_r8*(Km(ic)-Km(ic+1))
+            d(ic) = 0._r8
+         end do
+
+         ! Build tridiagonal vectors at ic = nst
+
+         ic = nst+1
+         a(ic) = 0._r8
+         b(ic) = 1._r8
+         c(ic) = 0._r8
+         d(ic) = u(ic)
+
+
+         !write(iulog,*) 'a =',a
+         !write(iulog,*) 'b =',b
+         !write(iulog,*) 'c =',c
+         !write(iulog,*) 'd =',d
+         ! Solve tridiagonal system for concentration profile
+
+         call tridiag (a, b, c, d, u, nst+1)
+         u = abs(u)
+         errs = maxval(abs(uold-u))
+         !write(iulog,*) 'u =',u
+
+         if (counting > 600) then
+            errf     = 1.e-13_r8
+            u = 0.3_r8*u+0.7_r8*uold
+         else
+            u = 0.5_r8*u+0.5_r8*uold
+         end if
+
+     end do
+
+     if (counting >= maxiter) then ! just in case too many iteration
+        write(iulog,*) 'uval0=',uval0
+        write(iulog,*) 'u=',u
+        write(iulog,*) '*** Exceed Maxiteration 1000 for 1st-order closer model'
+        call endrun (msg='MAX iteration')
+     end if
+     write(iulog,*) '1st-order closer model interation counting = ', counting
+     ! Copy concentration profile (needed because u is for levels 1 -> nst
+     ! but cval is for levels 0 -> nst)
+     kmm(0:nst) = Km(1:nst+1)
+     !uval(0) = 0._r8
+     do ic = 0, nst
+        uval(ic) = u(ic+1)
+     end do
+     end associate
+   end subroutine ScalarProfileIterativeWind
+
+  !-----------------------------------------------------------------------
+  subroutine MidODEWind (p, cdin, nst, nen, nn, l0S, u0S, z0S,  du0S, dpai0S, mixL,uval, mlcanopy_inst)
+     !
+     ! !DESCRIPTION:
+     ! ODE solver for wind profile
+     !
+     ! !USES:
+
+     use clm_varpar, only : nlevcanml
+     use clm_varcon, only : vkc
+     use CanopyFluxesMultilayerType, only : mlcanopy_type
+     use pftconMod, only : pftcon
+
+     !
+     ! !ARGUMENTS:
+     implicit none
+     integer , intent(in)  :: p
+     integer , intent(in)  :: nst             ! nstart
+     integer , intent(in)  :: nen             ! end
+     real(r8), intent(in)  :: l0S             ! Scalar value at reference height
+     integer , intent(in)  :: nn             ! Scalar value at reference height
+     real(r8), intent(in)  :: z0S             ! Scalar value at reference height
+     real(r8), intent(in)  :: u0S             ! Scalar value at reference height
+     real(r8), intent(in)  :: du0S             ! Scalar value at reference height
+     real(r8), intent(in)  :: dpai0S             ! Scalar value at reference height
+
+!     real(r8), intent(in)  :: kmm(0:nlevcanml)    ! Aerodynamic conductance diffusivity m2/s
+     real(r8), intent(in)  :: cdin              ! Cd drag coefficient
+     real(r8), intent(in)  :: mixL(0:nlevcanml) ! strg
+     real(r8), intent(inout) :: uval(0:nlevcanml)  ! Scalar value at each canopy layer for current timestep
+
+     type(mlcanopy_type), intent(in) :: mlcanopy_inst
+     !
+     ! !LOCAL VARIABLES:
+     integer  :: ic, i, j                            ! Canopy layer index
+     integer  :: ntot
+     real(r8) :: ufnF(nen-nst+1), DufnF(nen-nst+1)
+     !real(r8) :: ufn(nen-nst+1),ufn2(nen-nst+1)               ! Entries in tridiagonal matrix
+     !real(r8) :: Dufn(nen-nst+1),Dufn2(nen-nst+1)               ! Entries in tridiagonal matrix
+     !real(r8) :: dpai1(nen-nst+1),a1(nen-nst+1),L1(nen-nst+1),z1(nen-nst+1)                      ! Tridiagonal solution
+     real(r8) :: ufn(nn),ufn2(nn)               ! Entries in tridiagonal matrix
+     real(r8) :: Dufn(nn),Dufn2(nn)               ! Entries in tridiagonal matrix
+     real(r8) :: dpai1(nn),a1(nn),L1(nn),z1(nn)                      ! Tridiagonal solution
+     real(r8) :: dpaiS(0:nen-nst+1),LS(0:nen-nst+1),zsS(0:nen-nst+1)                      ! Tridiagonal solution
+     real(r8) :: dx, K, DL, cd, a0, u0, du0, l0, dpai0, z0
+
+     associate ( &
+                                               ! *** Input ***
+     !ztop     => mlcanopy_inst%ztop       , &  ! Canopy height (m)
+     !ncan     => mlcanopy_inst%ncan       , &  ! Number of aboveground layers
+     !ntop     => mlcanopy_inst%ntop       , &  ! Index for top leaf layer
+     !lai      => mlcanopy_inst%lai        , &  ! Leaf area index of canopy (m2/m2)
+     !sai      => mlcanopy_inst%sai        , &  ! Stem area index of canopy (m2/m2)
+     zs       => mlcanopy_inst%zs         , &  ! Canopy height for scalar concentration and source (m)
+     !zdisp   => mlcanopy_inst%zdisp     , &  ! Displacement Height (m)
+     !zref     => mlcanopy_inst%zref       , &  ! Reference height (m)
+     !uref     => mlcanopy_inst%uref       , &  ! Wind speed at reference height (m/s)
+     !displar  => pftcon%displar           , &  ! Ratio of displacement height to canopy top height
+     dpai        => mlcanopy_inst%dpai     &  ! jsong
+
+
+     )
+
+     ntot=nen-nst+1
+     !---------------------------------------------------------------------
+     cd=cdin
+
+     dpaiS(1:ntot)=dpai(p,nst:nen)
+     LS(1:ntot)=mixL(nst:nen)
+     zsS(1:ntot)=zs(p,nst:nen)
+
+     dpaiS(0)=dpai0S
+     LS(0)=l0S
+     zsS(0)=z0S
+
+     ufn(nn) = u0S
+     Dufn(nn) = du0S
+
+    do j = 0,ntot-1
+
+         u0 = ufn(nn)
+         du0 = Dufn(nn)
+
+         l0 = LS(j)
+         dpai0 = dpaiS(j)
+         z0 = zsS(j)
+
+         dpai1(1:nn) = (/ ( ( dpaiS(j)+float(i)/float(nn)*(dpaiS(j+1) - dpaiS(j)) ) , i = 1, nn ) /)  !   dpaiS(p,nst:nen)  (/ ( ( dpaiS(p,j)+float(i)/float(nn)*(dpaiS(p,j+1) - dpaiS(p,j)) ) , i = 1, nn ) /)
+         L1(1:nn) = (/ ( ( LS(j)+float(i)/float(nn)*(LS(j+1) - LS(j)) ) , i = 1, nn ) /) !LS(j) + (1:nn)'/nn*( LS(j+1) - LS(j));        !LS(nst:nen)
+         z1(1:nn) = (/ ( ( zsS(j)+float(i)/float(nn)*(zsS(j+1) - zsS(j)) ) , i = 1, nn ) /) !zS(p,j) + (1:nn)'/nn*( zS(p,j+1) - zS(p,j));   !    zS(p,nst:nen);
+        !write(iulog,*) 'dpai1=',dpai1
+        !write(iulog,*) 'L1=',L1
+        !write(iulog,*) 'z1=',z1
+
+         dx = z1(1)-z0
+
+         a0 = dpai0/dx/float(nn)
+
+         ufn2(1) = u0 + dx*du0 * 0.5_r8;
+         K = (L1(1)*0.5_r8+l0*0.5_r8)**2*abs(du0)
+         DL = (L1(1)-l0)/dx
+         Dufn2(1) = du0 + 0.5_r8*dx/K*((cd*a0*u0*abs(u0)  -   2*(L1(1)*0.5_r8+l0*0.5_r8)*DL*du0*abs(du0))*0.5_r8)
+
+         ufn(1) = u0 + dx*Dufn2(1)
+         K = (L1(1)*0.5_r8+l0*0.5_r8)**2*abs(Dufn2(1))
+         DL = (L1(1)-l0)/dx
+         Dufn(1) = du0 + dx/K*((cd*a0*ufn2(1)*abs(ufn2(1))  -   2*(L1(1)*0.5_r8+l0*0.5_r8)*DL*Dufn2(1)*abs(Dufn2(1)))*0.5_r8)
+
+         a1(1) = dpai1(1)/dx/float(nn)
+
+         do ic = 2, nn
+             dx = z1(ic)-z1(ic-1)
+             a1(ic) = dpai1(ic)/dx/float(nn)
+
+             ufn2(ic) = ufn(ic-1) + 0.5*dx*Dufn(ic-1)
+             K = (L1(ic)*0.5_r8+L1(ic-1)*0.5_r8)**2*abs(Dufn(ic-1))
+             DL = (L1(ic)-L1(ic-1))/dx
+             Dufn2(ic) = Dufn(ic-1) + 0.5*dx/K*((cd*(a1(ic-1)+a1(ic))*0.5_r8*ufn(ic-1)*abs(ufn(ic-1))  -   2*(L1(ic)*0.5_r8+L1(ic-1)*0.5_r8)*DL*Dufn(ic-1)*abs(Dufn(ic-1)))*0.5_r8)
+
+             ufn(ic) = ufn(ic-1) + dx*Dufn2(ic)
+             K = (L1(ic)*0.5_r8+L1(ic-1)*0.5_r8)**2*abs(Dufn2(ic))
+             DL = (L1(ic)-L1(ic-1))/dx
+             Dufn(ic) = Dufn(ic-1) + dx/K*((cd*(a1(ic-1)+a1(ic))*0.5_r8*ufn2(ic)*abs(ufn2(ic))  -   2*(L1(ic)*0.5_r8+L1(ic-1)*0.5_r8)*DL*Dufn2(ic)*abs(Dufn2(ic)))*0.5_r8)
+         end do
+        !write(iulog,*) 'j=',j,'ufn =', ufn
+        ufnF(j+1) = ufn(nn)
+        DufnF(j+1) = Dufn(nn)
+     end do
+     !do ic = nst, nen
+     !   uval(ic) = ufn(ic)
+     !end do
+     uval(nst:nen) = ufnF(1:ntot)
+
+     end associate
+   end subroutine MidODEWind
   !-----------------------------------------------------------------------
   subroutine ScalarProfile (p, niter, soilstate_inst, temperature_inst, &
   energyflux_inst, waterflux_inst, mlcanopy_inst)
@@ -1235,7 +2147,7 @@ contains
     ! temperature and fluxes are calculated as part of the implicit solution.
     !
     ! !USES:
-    use clm_varpar, only : isun, isha, nlevcan, nleaf
+    use clm_varpar, only : isun, isha, nlevcanml, nleaf
     use clm_varctl, only : dtime_sub, leaf_temp_iter
     use clm_time_manager, only : get_nstep
     use WaterVaporMod, only : SatVap, LatVap
@@ -1286,50 +2198,50 @@ contains
     real(r8) :: g0                   ! Soil heat flux (W/m2)
 
     real(r8) :: pai                          ! Plant area of layer (m2/m2)
-    real(r8) :: gleaf_sh(nlevcan,nleaf)      ! Leaf conductance for sensible heat (mol/m2/s)
-    real(r8) :: gleaf_et(nlevcan,nleaf)      ! Leaf conductance for water vapor (mol/m2/s)
-    real(r8) :: heatcap(nlevcan,nleaf)       ! Heat capacity of leaves (J/m2/K)
-    real(r8) :: avail_energy(nlevcan,nleaf)  ! Available energy for leaf (W/m2)
+    real(r8) :: gleaf_sh(nlevcanml,nleaf)      ! Leaf conductance for sensible heat (mol/m2/s)
+    real(r8) :: gleaf_et(nlevcanml,nleaf)      ! Leaf conductance for water vapor (mol/m2/s)
+    real(r8) :: heatcap(nlevcanml,nleaf)       ! Heat capacity of leaves (J/m2/K)
+    real(r8) :: avail_energy(nlevcanml,nleaf)  ! Available energy for leaf (W/m2)
     real(r8) :: qsat                         ! Saturation vapor pressure (mol/mol)
-    real(r8) :: dqsat(nlevcan,nleaf)         ! Temperature derivative of saturation vapor pressure (mol/mol/K)
-    real(r8) :: qsat_term(nlevcan,nleaf)     ! Intermediate calculation for saturation vapor pressure (mol/mol)
-    real(r8) :: alpha(nlevcan,nleaf)         ! Coefficient for leaf temperature (dimensionless)
-    real(r8) :: beta(nlevcan,nleaf)          ! Coefficient for leaf temperature (K mol/mol)
-    real(r8) :: delta(nlevcan,nleaf)         ! Coefficient for leaf temperature (K)
+    real(r8) :: dqsat(nlevcanml,nleaf)         ! Temperature derivative of saturation vapor pressure (mol/mol/K)
+    real(r8) :: qsat_term(nlevcanml,nleaf)     ! Intermediate calculation for saturation vapor pressure (mol/mol)
+    real(r8) :: alpha(nlevcanml,nleaf)         ! Coefficient for leaf temperature (dimensionless)
+    real(r8) :: beta(nlevcanml,nleaf)          ! Coefficient for leaf temperature (K mol/mol)
+    real(r8) :: delta(nlevcanml,nleaf)         ! Coefficient for leaf temperature (K)
 
     real(r8) :: rho_dz_over_dt               ! Intermediate calculation for canopy air storage
 
-    real(r8) :: a1(nlevcan)                  ! Coefficient for canopy air temperature
-    real(r8) :: b11(nlevcan)                 ! Coefficient for canopy air temperature
-    real(r8) :: b12(nlevcan)                 ! Coefficient for canopy air temperature
-    real(r8) :: c1(nlevcan)                  ! Coefficient for canopy air temperature
-    real(r8) :: d1(nlevcan)                  ! Coefficient for canopy air temperature
+    real(r8) :: a1(nlevcanml)                  ! Coefficient for canopy air temperature
+    real(r8) :: b11(nlevcanml)                 ! Coefficient for canopy air temperature
+    real(r8) :: b12(nlevcanml)                 ! Coefficient for canopy air temperature
+    real(r8) :: c1(nlevcanml)                  ! Coefficient for canopy air temperature
+    real(r8) :: d1(nlevcanml)                  ! Coefficient for canopy air temperature
 
-    real(r8) :: a2(nlevcan)                  ! Coefficient for canopy air water vapor (mole fraction)
-    real(r8) :: b21(nlevcan)                 ! Coefficient for canopy air water vapor (mole fraction)
-    real(r8) :: b22(nlevcan)                 ! Coefficient for canopy air water vapor (mole fraction)
-    real(r8) :: c2(nlevcan)                  ! Coefficient for canopy air water vapor (mole fraction)
-    real(r8) :: d2(nlevcan)                  ! Coefficient for canopy air water vapor (mole fraction)
+    real(r8) :: a2(nlevcanml)                  ! Coefficient for canopy air water vapor (mole fraction)
+    real(r8) :: b21(nlevcanml)                 ! Coefficient for canopy air water vapor (mole fraction)
+    real(r8) :: b22(nlevcanml)                 ! Coefficient for canopy air water vapor (mole fraction)
+    real(r8) :: c2(nlevcanml)                  ! Coefficient for canopy air water vapor (mole fraction)
+    real(r8) :: d2(nlevcanml)                  ! Coefficient for canopy air water vapor (mole fraction)
     real(r8) :: ga_prof_ic_minus_one         ! Special case for ic-1 = 0: use gs0 not ga_prof
 
     real(r8) :: ainv, binv                   ! "a" and "b" elements of 2x2 matrix to invert
     real(r8) :: cinv, dinv                   ! "c" and "d" elements of 2x2 matrix to invert
     real(r8) :: det                          ! Determinant of 2x2 matrix
 
-    real(r8) :: e11(0:nlevcan)               ! Coefficient for canopy air temperature
-    real(r8) :: e12(0:nlevcan)               ! Coefficient for canopy air temperature
-    real(r8) :: f1(0:nlevcan)                ! Coefficient for canopy air temperature
-    real(r8) :: e21(0:nlevcan)               ! Coefficient for canopy air water vapor (mole fraction)
-    real(r8) :: e22(0:nlevcan)               ! Coefficient for canopy air water vapor (mole fraction)
-    real(r8) :: f2(0:nlevcan)                ! Coefficient for canopy air water vapor (mole fraction)
+    real(r8) :: e11(0:nlevcanml)               ! Coefficient for canopy air temperature
+    real(r8) :: e12(0:nlevcanml)               ! Coefficient for canopy air temperature
+    real(r8) :: f1(0:nlevcanml)                ! Coefficient for canopy air temperature
+    real(r8) :: e21(0:nlevcanml)               ! Coefficient for canopy air water vapor (mole fraction)
+    real(r8) :: e22(0:nlevcanml)               ! Coefficient for canopy air water vapor (mole fraction)
+    real(r8) :: f2(0:nlevcanml)                ! Coefficient for canopy air water vapor (mole fraction)
 
     ! These are needed only for conservation checks
 
-    real(r8) :: storage_sh(nlevcan)        ! Heat storage flux in air (W/m2)
-    real(r8) :: storage_et(nlevcan)        ! Water vapor storage flux in air (mol/m2/s)
-    real(r8) :: stveg(nlevcan)             ! Leaf storage heat flux (W/m2)
-    real(r8) :: shsrc(nlevcan)             ! Leaf sensible heat flux (W/m2)
-    real(r8) :: etsrc(nlevcan)             ! Leaf water vapor flux (mol/m2/s)
+    real(r8) :: storage_sh(nlevcanml)        ! Heat storage flux in air (W/m2)
+    real(r8) :: storage_et(nlevcanml)        ! Water vapor storage flux in air (mol/m2/s)
+    real(r8) :: stveg(nlevcanml)             ! Leaf storage heat flux (W/m2)
+    real(r8) :: shsrc(nlevcanml)             ! Leaf sensible heat flux (W/m2)
+    real(r8) :: etsrc(nlevcanml)             ! Leaf water vapor flux (mol/m2/s)
     real(r8) :: stveg_leaf                 ! Leaf storage heat flux from LeafTemperatureMod (W/m2)
     real(r8) :: shsrc_leaf                 ! Leaf sensible heat flux from LeafTemperatureMod (W/m2)
     real(r8) :: etsrc_leaf                 ! Leaf water vapor flux from LeafTemperatureMod (mol/m2/s)
@@ -2041,7 +2953,7 @@ contains
     integer :: ii, jj                  ! Looping indices
     !---------------------------------------------------------------------
 
-    fin = '../canopy/psihatM.dat'
+    fin = '/home/hellbent/MLCANcode/psihatM.dat'
     nin = shr_file_getUnit()
     open (unit=nin, file=trim(fin), action="read", status="old", err=10)
     read (nin,*,err=11) dtLgridM(1,1),(dtLgridM(1,jj), jj = 1,nL)
@@ -2051,7 +2963,7 @@ contains
     close (nin)
     call shr_file_freeUnit (nin)
     
-    fin = '../canopy/psihatH.dat'
+    fin = '/home/hellbent/MLCANcode/psihatH.dat'
     nin = shr_file_getUnit()
     open (unit=nin, file=trim(fin), action="read", status="old", err=20)
     read (nin,*,err=21) dtLgridH(1,1),(dtLgridH(1,jj), jj = 1,nL)
@@ -2137,6 +3049,7 @@ contains
     z0mr    => pftcon%z0mr             , &  ! Ratio of momentum roughness length to canopy top height
     displar => pftcon%displar          , &  ! Ratio of displacement height to canopy top height
     ztop    => mlcanopy_inst%ztop      , &  ! Canopy height (m)
+    ztop39    => mlcanopy_inst%ztop39      , &  ! Canopy height (m)
     lai     => mlcanopy_inst%lai       , &  ! Leaf area index of canopy (m2/m2)
     sai     => mlcanopy_inst%sai       , &  ! Stem area index of canopy (m2/m2)
     zref    => mlcanopy_inst%zref      , &  ! Reference height (m)

@@ -35,9 +35,10 @@ contains
     ! Solar radiation transfer through canopy
     !
     ! !USES:
-    use clm_varpar, only : numrad, nlevcan, isun, isha, ivis
+    use clm_varpar, only : numrad, nlevcanml, isun, isha, ivis
     use clm_varcon, only : pi => rpi
     use clm_varctl, only : light
+    use clm_varctl, only : iulog
     !
     ! !ARGUMENTS:
     implicit none
@@ -70,8 +71,8 @@ contains
     real(r8) :: omega(bounds%begp:bounds%endp,1:numrad)  ! Leaf/stem scattering coefficient
 
     ! For Norman radiation
-    real(r8) :: tbj(bounds%begp:bounds%endp,0:nlevcan)   ! Exponential transmittance of direct beam onto canopy layer
-    real(r8) :: tb(bounds%begp:bounds%endp,1:nlevcan)    ! Exponential transmittance of direct beam through a single leaf layer
+    real(r8) :: tbj(bounds%begp:bounds%endp,0:nlevcanml)   ! Exponential transmittance of direct beam onto canopy layer
+    real(r8) :: tb(bounds%begp:bounds%endp,1:nlevcanml)    ! Exponential transmittance of direct beam through a single leaf layer
 
     ! For Goudriaan radiation
     real(r8) :: albvegh                                    ! Vegetation albedo, horizontal leaves
@@ -91,12 +92,13 @@ contains
     real(r8) :: avmu(bounds%begp:bounds%endp)              ! Average inverse diffuse optical depth per unit leaf area
     real(r8) :: betad(bounds%begp:bounds%endp,1:numrad)    ! Upscatter parameter for diffuse radiation
     real(r8) :: betab(bounds%begp:bounds%endp,1:numrad)    ! Upscatter parameter for direct beam radiation
+    real(r8) :: clump_fac
     !---------------------------------------------------------------------
 
     associate ( &
                                                 ! *** Input ***
     xl         => pftcon%xl                , &  ! Departure of leaf angle from spherical orientation (-)
-    clump_fac  => pftcon%clump_fac         , &  ! Foliage clumping index (-)
+    !clump_fac  => pftcon%clump_fac         , &  ! Foliage clumping index (-)
     rhol       => pftcon%rhol              , &  ! Leaf reflectance (-)
     taul       => pftcon%taul              , &  ! Leaf transmittance (-)
     rhos       => pftcon%rhos              , &  ! Stem reflectance (-)
@@ -116,9 +118,11 @@ contains
     fracsha    => mlcanopy_inst%fracsha    , &  ! Shaded fraction of canopy layer
     swleaf     => mlcanopy_inst%swleaf     , &  ! Leaf absorbed solar radiation (W/m2 leaf)
     apar       => mlcanopy_inst%apar       , &  ! Leaf absorbed PAR (umol photon/m2 leaf/s)
+    aparsun       => mlcanopy_inst%aparsun       , &  ! Leaf absorbed PAR (umol photon/m2 leaf/s)
+    aparsha       => mlcanopy_inst%aparsha       , &  ! Leaf absorbed PAR (umol photon/m2 leaf/s)
     td         => mlcanopy_inst%td           &  ! Exponential transmittance of diffuse radiation through a single leaf layer
     )
-
+    clump_fac = 1._r8
     !---------------------------------------------------------------------
     ! Weight reflectance and transmittance by lai and sai and calculate
     ! leaf scattering coefficient
@@ -183,7 +187,7 @@ contains
        ! Leaf layers
 
        do ic = nbot(p), ntop(p)
-          fracsun(p,ic) = clump_fac(patch%itype(p)) * exp(-kb(p) * sumpai(p,ic) * clump_fac(patch%itype(p)))
+          fracsun(p,ic) = clump_fac * exp(-kb(p) * sumpai(p,ic) * clump_fac)
           fracsha(p,ic) = 1._r8 - fracsun(p,ic)
        end do
 
@@ -210,7 +214,7 @@ contains
              angle = (5._r8 + (j - 1) * 10._r8) * pi / 180._r8
              gdirj = phi1(p) + phi2(p) * cos(angle)
              td(p,ic) = td(p,ic) &
-                      + exp(-gdirj / cos(angle) * dpai(p,ic) * clump_fac(patch%itype(p))) * sin(angle) * cos(angle)
+                      + exp(-gdirj / cos(angle) * dpai(p,ic) * clump_fac) * sin(angle) * cos(angle)
           end do
           td(p,ic) = td(p,ic) * 2._r8 * (10._r8 * pi / 180._r8)
        end do
@@ -235,7 +239,7 @@ contains
        ! Leaf layers
 
        do ic = nbot(p), ntop(p)
-          tb(p,ic) = exp(-kb(p) * dpai(p,ic) * clump_fac(patch%itype(p)))
+          tb(p,ic) = exp(-kb(p) * dpai(p,ic) * clump_fac)
        end do
 
     end do
@@ -263,7 +267,7 @@ contains
           else if (ic == nbot(p)) then
              lev = 0        ! transmittance onto ground
           end if
-          tbj(p,lev) = exp(-kb(p) * cumpai * clump_fac(patch%itype(p)))
+          tbj(p,lev) = exp(-kb(p) * cumpai * clump_fac)
        end do
     end do
 
@@ -324,9 +328,9 @@ contains
           ! Effective canopy albedo, including soil
       
           albcanb(p,ib) = albvegb + (albsoib(c,ib) - albvegb) &
-                        * exp(-2._r8 * kbm(p,ib) * (lai(p)+sai(p)) * clump_fac(patch%itype(p)))
+                        * exp(-2._r8 * kbm(p,ib) * (lai(p)+sai(p)) * clump_fac)
           albcand(p,ib) = albvegd + (albsoid(c,ib) - albvegd) &
-                        * exp(-2._r8 * kdm(p,ib) * (lai(p)+sai(p)) * clump_fac(patch%itype(p)))
+                        * exp(-2._r8 * kdm(p,ib) * (lai(p)+sai(p)) * clump_fac)
 
        end do
     end do
@@ -384,12 +388,30 @@ contains
 
     do f = 1, num_exposedvegp
        p = filter_exposedvegp(f)
+       c = patch%column(p)
+
        do ic = 1, ncan(p)
           apar(p,ic,isun) = swleaf(p,ic,isun,ivis) * 4.6_r8
           apar(p,ic,isha) = swleaf(p,ic,isha,ivis) * 4.6_r8
+          aparsun(p,ic) = apar(p,ic,isun)
+          aparsha(p,ic) = apar(p,ic,isha)
        end do
-    end do
 
+
+    !write(iulog,*) '<------- Solar Radiation --------------'
+    !
+    !write(iulog,*) 'num_exposedvegp=', num_exposedvegp, 'f=',f, 'p=',p,'c=',c
+    !write(iulog,*) 'rho='   ,   rho ,   'tau='  ,    tau
+    !write(iulog,*) 'lai = ', lai(p),  'sai='   ,   sai(p) ,'albsoib = ', albsoib(c,1), albsoib(c,2),  'albsoid='   ,   albsoid(c,1),albsoid(c,2) ,'solar_zen',cos(solar_zen(p))
+    !write(iulog,*) 'fracsun=',fracsun
+    !write(iulog,*) 'fracsha=',fracsha
+    !write(iulog,*) 'td=',td
+    !write(iulog,*) 'swleaf=',swleaf
+    !write(iulog,*) 'apar_sun=',apar(p,:,1)
+    !write(iulog,*) 'apar_shad=',apar(p,:,2)
+    !
+    !write(iulog,*) '------- Solar Radiation -------------->'
+    end do
     end associate
   end subroutine SolarRadiation
 
@@ -401,7 +423,7 @@ contains
     ! Compute solar radiation transfer through canopy using Norman (1979)
     !
     ! !USES:
-    use clm_varpar, only : numrad, nlevcan, isun, isha
+    use clm_varpar, only : numrad, nlevcanml, isun, isha
     use clm_varctl, only : iulog
     use MathToolsMod, only : tridiag
     !
@@ -413,9 +435,9 @@ contains
     real(r8), intent(in) :: rho(bounds%begp:bounds%endp,1:numrad)    ! Leaf/stem reflectance
     real(r8), intent(in) :: tau(bounds%begp:bounds%endp,1:numrad)    ! Leaf/stem transmittance
     real(r8), intent(in) :: omega(bounds%begp:bounds%endp,1:numrad)  ! Leaf/stem scattering coefficient
-    real(r8), intent(in) :: tb(bounds%begp:bounds%endp,1:nlevcan)    ! Exponential transmittance of direct beam through a single leaf layer
-    real(r8), intent(in) :: td(bounds%begp:bounds%endp,1:nlevcan)    ! Exponential transmittance of diffuse through a single leaf layer
-    real(r8), intent(in) :: tbj(bounds%begp:bounds%endp,0:nlevcan)   ! Exponential transmittance of direct beam onto canopy layer
+    real(r8), intent(in) :: tb(bounds%begp:bounds%endp,1:nlevcanml)    ! Exponential transmittance of direct beam through a single leaf layer
+    real(r8), intent(in) :: td(bounds%begp:bounds%endp,1:nlevcanml)    ! Exponential transmittance of diffuse through a single leaf layer
+    real(r8), intent(in) :: tbj(bounds%begp:bounds%endp,0:nlevcanml)   ! Exponential transmittance of direct beam onto canopy layer
     type(surfalb_type), intent(in) :: surfalb_inst
     type(mlcanopy_type), intent(inout) :: mlcanopy_inst
     !
@@ -435,7 +457,7 @@ contains
     integer  :: m                                                ! Index to the tridiagonal matrix
     real(r8) :: aic, bic                                         ! Intermediate terms for tridiagonal matrix
     real(r8) :: eic, fic                                         ! Intermediate terms for tridiagonal matrix
-    integer, parameter :: neq = (nlevcan+1)*2                    ! Number of tridiagonal equations to solve
+    integer, parameter :: neq = (nlevcanml+1)*2                    ! Number of tridiagonal equations to solve
     real(r8) :: atri(neq), btri(neq)                             ! Entries in tridiagonal matrix
     real(r8) :: ctri(neq), dtri(neq)                             ! Entries in tridiagonal matrix
     real(r8) :: utri(neq)                                        ! Tridiagonal solution
@@ -444,8 +466,8 @@ contains
     real(r8) :: swabsd                                           ! Absorbed diffuse solar flux for canopy layer (W/m2 ground)
     real(r8) :: swsun                                            ! Absorbed solar radiation, sunlit fraction of layer (W/m2 ground)
     real(r8) :: swsha                                            ! Absorbed solar radiation, shaded fraction of layer (W/m2 ground)
-    real(r8) :: swup(bounds%begp:bounds%endp,0:nlevcan,numrad)   ! Upward diffuse solar flux above canopy layer (W/m2 ground)
-    real(r8) :: swdn(bounds%begp:bounds%endp,0:nlevcan,numrad)   ! Downward diffuse solar flux onto canopy layer (W/m2 ground)
+    real(r8) :: swup(bounds%begp:bounds%endp,0:nlevcanml,numrad)   ! Upward diffuse solar flux above canopy layer (W/m2 ground)
+    real(r8) :: swdn(bounds%begp:bounds%endp,0:nlevcanml,numrad)   ! Downward diffuse solar flux onto canopy layer (W/m2 ground)
     !---------------------------------------------------------------------
 
     associate ( &
@@ -733,11 +755,12 @@ contains
     ! Fluxes per unit ground area (W/m2 ground area)
     real(r8) :: icsun      ! Absorbed solar radiation, sunlit canopy (W/m2)
     real(r8) :: icsha      ! Absorbed solar radiation, shaded canopy (W/m2)
+    real(r8) :: clump_fac
     !---------------------------------------------------------------------
 
     associate ( &
                                                  ! *** Input ***
-    clump_fac  => pftcon%clump_fac          , &  ! Foliage clumping index (-)
+    !clump_fac  => pftcon%clump_fac          , &  ! Foliage clumping index (-)
     lai        => mlcanopy_inst%lai         , &  ! Leaf area index of canopy (m2/m2)
     sai        => mlcanopy_inst%sai         , &  ! Stem area index of canopy (m2/m2)
     ncan       => mlcanopy_inst%ncan        , &  ! Number of aboveground layers
@@ -757,7 +780,7 @@ contains
     albcan     => mlcanopy_inst%albcan      , &  ! Albedo above canopy
     swsoi      => mlcanopy_inst%swsoi         &  ! Absorbed solar radiation, ground (W/m2)
     )
-
+    clump_fac = 1._r8
     !---------------------------------------------------------------------
     ! Multi-layer radiative transfer
     !---------------------------------------------------------------------
@@ -780,20 +803,20 @@ contains
              ! ild - absorbed diffuse flux per unit leaf area at cumulative LAI, 
              ! average for all leaves (J / m2 leaf / s)
 
-             ild = (1._r8 - albcand(p,ib)) * swskyd(p,ib) * kdm(p,ib) * clump_fac(patch%itype(p)) &
-                 * exp(-kdm(p,ib) * sumpai(p,ic) * clump_fac(patch%itype(p)))
+             ild = (1._r8 - albcand(p,ib)) * swskyd(p,ib) * kdm(p,ib) * clump_fac &
+                 * exp(-kdm(p,ib) * sumpai(p,ic) * clump_fac)
             
              ! ilb - absorbed direct beam flux (total with scattering) per unit leaf area 
              ! at cumulative LAI, average for all leaves (J / m2 leaf / s)
 
-             ilb = (1._r8 - albcanb(p,ib)) * swskyb(p,ib) * kbm(p,ib) * clump_fac(patch%itype(p)) &
-                 * exp(-kbm(p,ib) * sumpai(p,ic) * clump_fac(patch%itype(p)))
+             ilb = (1._r8 - albcanb(p,ib)) * swskyb(p,ib) * kbm(p,ib) * clump_fac &
+                 * exp(-kbm(p,ib) * sumpai(p,ic) * clump_fac)
             
              ! ilbb - absorbed direct beam flux (unscattered direct component) per unit leaf area 
              ! at cumulative LAI, average for all leaves (J / m2 leaf / s)
 
-             ilbb = (1._r8 - omega(p,ib)) * swskyb(p,ib) * kb(p) * clump_fac(patch%itype(p)) &
-                  * exp(-kb(p) * sumpai(p,ic) * clump_fac(patch%itype(p)))
+             ilbb = (1._r8 - omega(p,ib)) * swskyb(p,ib) * kb(p) * clump_fac &
+                  * exp(-kb(p) * sumpai(p,ic) * clump_fac)
             
              ! ilbs - absorbed direct beam flux (scattered direct component) per unit leaf area 
              ! at cumulative LAI, average for all leaves (J / m2 leaf / s)
@@ -845,8 +868,8 @@ contains
 
           ! Solar radiation absorbed by ground (soil)
 
-          swsoi(p,ib) = swskyb(p,ib) * (1._r8 - albcanb(p,ib)) * exp(-kbm(p,ib)*(lai(p)+sai(p))*clump_fac(patch%itype(p))) &
-                      + swskyd(p,ib) * (1._r8 - albcand(p,ib)) * exp(-kdm(p,ib)*(lai(p)+sai(p))*clump_fac(patch%itype(p)))
+          swsoi(p,ib) = swskyb(p,ib) * (1._r8 - albcanb(p,ib)) * exp(-kbm(p,ib)*(lai(p)+sai(p))*clump_fac) &
+                      + swskyd(p,ib) * (1._r8 - albcand(p,ib)) * exp(-kdm(p,ib)*(lai(p)+sai(p))*clump_fac)
 
           ! Solar radiation reflected by canopy
 
@@ -930,11 +953,12 @@ contains
     real(r8) :: suminc                  ! Incident radiation for energy conservation check
     real(r8) :: sumref                  ! Reflected radiation for energy conservation check
     real(r8) :: sumabs                  ! Absorbed radiation for energy conservation check
+    real(r8) :: clump_fac
     !---------------------------------------------------------------------
 
     associate ( &
                                                   ! *** Input ***
-    clump_fac => pftcon%clump_fac            , &  ! Foliage clumping index (-)
+    !clump_fac => pftcon%clump_fac            , &  ! Foliage clumping index (-)
     ncan      => mlcanopy_inst%ncan          , &  ! Number of aboveground layers
     nbot      => mlcanopy_inst%nbot          , &  ! Index for bottom leaf layer
     ntop      => mlcanopy_inst%ntop          , &  ! Index for top leaf layer
@@ -956,7 +980,7 @@ contains
     swsoi     => mlcanopy_inst%swsoi         , &  ! Absorbed solar radiation, ground (W/m2)
     albcan    => mlcanopy_inst%albcan          &  ! Albedo above canopy
     )
-
+    clump_fac = 1._r8
     do ib = 1, numrad
        do f = 1, num_exposedvegp
           p = filter_exposedvegp(f)
@@ -976,8 +1000,8 @@ contains
           d = omega(p,ib) * kb(p) * swskyb(p,ib) / (h*h - kb(p)*kb(p))
           g1 = (betab(p,ib) * kb(p) - b * betab(p,ib) - c * (1._r8 - betab(p,ib))) * d
           g2 = ((1._r8 - betab(p,ib)) * kb(p) + c * betab(p,ib) + b * (1._r8 - betab(p,ib))) * d
-          s1 = exp(-h * (lai(p)+sai(p)) * clump_fac(patch%itype(p)))
-          s2 = exp(-kb(p) * (lai(p)+sai(p)) * clump_fac(patch%itype(p)))
+          s1 = exp(-h * (lai(p)+sai(p)) * clump_fac)
+          s2 = exp(-kb(p) * (lai(p)+sai(p)) * clump_fac)
 
           ! Terms for direct beam radiation
 
@@ -999,7 +1023,7 @@ contains
           iupwb = -g1 * s2 + n1b * u * s1 + n2b * v / s1
           idwnb =  g2 * s2 - n1b * v * s1 - n2b * u / s1
           iabsb = swskyb(p,ib) - iupwb0 - (1._r8 - albsoid(cp,ib)) * idwnb - (1._r8 - albsoib(cp,ib)) * swskyb(p,ib) * s2
-          iabsb_sun = (1._r8 - omega(p,ib)) * ((1._r8 - s2) * swskyb(p,ib) + 1._r8 / avmu(p) * (a1b + a2b) * clump_fac(patch%itype(p)))
+          iabsb_sun = (1._r8 - omega(p,ib)) * ((1._r8 - s2) * swskyb(p,ib) + 1._r8 / avmu(p) * (a1b + a2b) * clump_fac)
           iabsb_sha = iabsb - iabsb_sun
 
           ! Terms for diffuse radiation
@@ -1019,7 +1043,7 @@ contains
           iupwd =  n1d * u * s1 + n2d * v / s1
           idwnd = -n1d * v * s1 - n2d * u / s1
           iabsd = swskyd(p,ib) - iupwd0 - (1._r8 - albsoid(cp,ib)) * idwnd
-          iabsd_sun = (1._r8 - omega(p,ib)) / avmu(p) * (a1d + a2d) * clump_fac(patch%itype(p))
+          iabsd_sun = (1._r8 - omega(p,ib)) / avmu(p) * (a1d + a2d) * clump_fac
           iabsd_sha = iabsd - iabsd_sun
 
           !----------------------------------------------------------------
@@ -1076,22 +1100,22 @@ contains
 
              ! s1 and s2 depend on cumulative plant area index
 
-             s1 = exp(-h * sumpai(p,ic) * clump_fac(patch%itype(p)))
-             s2 = exp(-kb(p) * sumpai(p,ic) * clump_fac(patch%itype(p)))
+             s1 = exp(-h * sumpai(p,ic) * clump_fac)
+             s2 = exp(-kb(p) * sumpai(p,ic) * clump_fac)
 
              ! ilbs - absorbed direct beam flux (scattered direct component) per unit leaf area
              ! at cumulative LAI, average for all leaves (J / m2 leaf / s)
 
              diupwb =  kb(p) * g1 * s2 - h * n1b * u * s1 + h * n2b * v / s1
              didwnb = -kb(p) * g2 * s2 + h * n1b * v * s1 - h * n2b * u / s1
-             ilbs = (omega(p,ib) * kb(p) * swskyb(p,ib) * s2 + (diupwb - didwnb)) * clump_fac(patch%itype(p))
+             ilbs = (omega(p,ib) * kb(p) * swskyb(p,ib) * s2 + (diupwb - didwnb)) * clump_fac
 
              ! ild - absorbed diffuse flux per unit leaf area at cumulative LAI,
              ! average for all leaves (J / m2 leaf / s)
 
              diupwd = -h * n1d * u * s1 + h * n2d * v / s1
              didwnd =  h * n1d * v * s1 - h * n2d * u / s1
-             ild = (diupwd - didwnd) * clump_fac(patch%itype(p))
+             ild = (diupwd - didwnd) * clump_fac
 
              ! Save leaf fluxes per unit sunlit and shaded leaf area (W/m2 leaf)
 

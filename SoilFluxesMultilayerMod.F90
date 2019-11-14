@@ -157,7 +157,26 @@ contains
     ! Error check
 
     err = rnsoi(p) - shsoi(p) - lhsoi(p) - gsoi(p)
+    !write(iulog,*) 'soilresis(c) =',soilresis(c)
     if (abs(err) > 0.001_r8) then
+    write(iulog,*) '1)', swsoi(p,ivis)            , &  ! Absorbed solar radiation, ground (W/m2)
+    '2)',irsoi(p)        , &  ! Absorbed longwave radiation, ground (W/m2)
+    '3)',tref (p)          , &  ! Air temperature at reference height (K)
+    '4)',pref (p)         , &  ! Air pressure at reference height (Pa)
+    '5)',rhomol        , &  ! Molar density at reference height (mol/m3)
+    '6)',cpair         , &  ! Specific heat of air at constant pressure, at reference height (J/mol/K)
+    '7)',tair(p,1)         , &  ! Air temperature profile (K)
+    '8)',eair(p,1)           , &  ! Vapor pressure profile (Pa)
+    '9)',ga_prof(p,0)       , &  ! Canopy layer aerodynamic conductance for scalars (mol/m2/s)
+    '10)',tair_old(p,0)      , &  ! Air temperature profile for previous timestep (K)
+    '11)',z(c,snl(c)+1)             , &  ! Soil layer depth (m)
+    '12)',zi (c,snl(c))                                    , &  ! Soil layer depth at layer interface (m)
+    '13)',snl(c)                                     , &  ! Number of snow layers
+    '14)',soilresis(c)             , &  ! Soil evaporative resistance (s/m)
+    '15)',thk(c,snl(c)+1)                      , &  ! Soil layer thermal conductivity (W/m/K)
+    '16)',smp_l(c,1)                   , &  ! Soil layer matric potential (mm)
+   '17)', t_soisno(c,snl(c)+1)             ! Soil temperature (K)
+
        call endrun (msg=' ERROR: SoilFluxesMultilayerMod: energy balance error')
     end if
 
