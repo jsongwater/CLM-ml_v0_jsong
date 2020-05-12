@@ -408,7 +408,7 @@ contains
 
     ! Canopy density length scale
 
-    Lc(p) = ztop39(p) / (cd * (lai(p) + sai(p))) ! ztop: canopy height from htop_patch
+    Lc(p) = ztop(p) / (cd * (lai(p) + sai(p))) ! ztop: canopy height from htop_patch: ztop39(p)->ztop(p) 5/11/20
 
     do ic = 0,ncan(p) ! initialize wind profile within canopy
         wind_1stoldH(p,ic) = wind_1stold(p,ic)
@@ -634,12 +634,12 @@ contains
     select case (turb_type)
        case (1, 2)
 !         eta = min (beta/lm*ztop(p), 10._r8)
-          eta = min (beta/lm*ztop39(p), 20._r8)
+          eta = min (beta/lm*ztop(p), 20._r8) ! ztop39->
        case (3, 4)
           eta = 3._r8
     end select
 
-    beta_over_lm = eta / ztop39(p)
+    beta_over_lm = eta / ztop(p) ! ztop39->
 !   beta_over_lm = beta / lm
 
     do ic = 1, ntop(p)
@@ -1147,7 +1147,7 @@ contains
     dt = beta**2 * Lc(p)
     dt = dt * (1._r8 - exp(-0.25_r8*(lai(p)+sai(p))/beta**2))
     dt = min(ztop39(p), dt)
-    zdisp(p) = ztop39(p) - dt
+    zdisp(p) = (ztop(p)-ztop39(p)) + ztop39(p) - dt ! updated 5/11/20
     dt = ztop(p) - zdisp(p) ! jsong recalculate dt
 
     if ((zref(p) - zdisp(p)) < 0._r8) then
