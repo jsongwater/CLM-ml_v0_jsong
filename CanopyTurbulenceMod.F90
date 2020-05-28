@@ -408,7 +408,7 @@ contains
 
     ! Canopy density length scale
 
-    Lc(p) = ztop(p) / (cd * (lai(p) + sai(p))) ! ztop: canopy height from htop_patch: ztop39(p)->ztop(p) 5/11/20
+    Lc(p) = ztop39(p) / (cd * (lai(p) + sai(p))) ! ztop: canopy height from htop_patch: ztop39(p)->ztop(p) 5/11/20 : Reverse ztop(p)->ztop39(p) 5/18/20
 
     do ic = 0,ncan(p) ! initialize wind profile within canopy
         wind_1stoldH(p,ic) = wind_1stold(p,ic)
@@ -1146,7 +1146,7 @@ contains
 
     dt = beta**2 * Lc(p)
     dt = dt * (1._r8 - exp(-0.25_r8*(lai(p)+sai(p))/beta**2))
-    dt = min(ztop39(p), dt)
+    dt = min(ztop(p), dt)
     zdisp(p) = (ztop(p)-ztop39(p)) + ztop39(p) - dt ! updated 5/11/20
     dt = ztop(p) - zdisp(p) ! jsong recalculate dt
 
